@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": ".test-build",
+    "types": ["node"]
+  },
+  "include": [
+    "scripts/test-logic.ts",
+    "src/api/model.ts",
+    "src/api/bostaState.ts",
+    "src/api/activityLog.ts",
+    "src/state/selectors.ts",
+    "src/i18n/strings.ts",
+    "src/theme/tokens.ts",
+    "src/api/shopify.ts"
+  ]
+}

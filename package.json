@@ -1,0 +1,41 @@
+{
+  "name": "oka-wh-app",
+  "version": "1.0.0",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run test:logic",
+    "test:logic": "tsc -p tsconfig.test.json && node .test-build/scripts/test-logic.js",
+    "verify": "node scripts/verify-live.mjs",
+    "bundle:android": "expo export --platform android --output-dir dist"
+  },
+  "dependencies": {
+    "@expo-google-fonts/ibm-plex-mono": "^0.4.1",
+    "@expo-google-fonts/ibm-plex-sans-arabic": "^0.4.2",
+    "expo": "~54.0.0",
+    "expo-audio": "~1.1.1",
+    "expo-camera": "~17.0.10",
+    "expo-clipboard": "~8.0.8",
+    "expo-constants": "~18.0.13",
+    "expo-file-system": "~19.0.23",
+    "expo-font": "~14.0.12",
+    "expo-haptics": "~15.0.8",
+    "expo-image": "~3.0.11",
+    "expo-keep-awake": "~15.0.8",
+    "expo-linking": "~8.0.12",
+    "expo-status-bar": "~3.0.9",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-native": "^0.81.5",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-svg": "^15.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "~19.1.0",
+    "typescript": "~5.9.2"
+  }
+}
