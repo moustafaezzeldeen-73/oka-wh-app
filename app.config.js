@@ -30,6 +30,20 @@ module.exports = ({ config }) => ({
       'FOREGROUND_SERVICE_MICROPHONE',
     ],
   },
+  ios: {
+    // Only matters for a real build (`eas build`) — Expo Go ignores this and
+    // uses its own Info.plist, which already declares camera/mic usage for
+    // the modules it ships (that's why permission prompts still work when
+    // testing under Expo Go with no ios config at all).
+    bundleIdentifier: 'com.okaegypt.warehouse',
+    infoPlist: {
+      NSCameraUsageDescription:
+        'OKA Warehouse uses the camera to scan AWB barcodes and photograph order contents.',
+      NSMicrophoneUsageDescription:
+        'OKA Warehouse records customer calls so they can be attached to the order.',
+      UIBackgroundModes: ['audio'],
+    },
+  },
   plugins: [
     [
       'expo-camera',

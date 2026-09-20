@@ -20,12 +20,19 @@ import { C, R } from '../theme/tokens';
 /**
  * Call screen with recording.
  *
- * Android does not let a third-party app tap the call's downlink audio — that
- * is a platform restriction, not an app limitation. What the app can do (and
- * does) is record from the microphone across the call, which captures both
- * sides when the handset is on speaker. The UI says so plainly rather than
- * pretending otherwise, and the resulting file is uploaded to Shopify Files and
- * linked from the order log.
+ * Neither Android nor iOS lets a third-party app tap the call's downlink
+ * audio — that is a platform restriction, not an app limitation. What the app
+ * can do (and does) is record from the microphone across the call, which
+ * captures both sides when the handset is on speaker. The UI says so plainly
+ * rather than pretending otherwise, and the resulting file is uploaded to
+ * Shopify Files and linked from the order log.
+ *
+ * iOS is stricter still: once `tel:` backgrounds the app to place the call,
+ * recording only keeps running if the app holds a background-audio
+ * entitlement. Expo Go's own binary does not, so under Expo Go the recording
+ * captures only up to the moment the Phone app takes over — a real build
+ * (`eas build`) with the `audio` background mode picks up where Expo Go
+ * leaves off.
  */
 export function CallSheet({ order }: { order: Order }) {
   const { L, ar, openSheet, contactTarget, logCall, setContactTarget } = useApp();
