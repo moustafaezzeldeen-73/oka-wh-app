@@ -102,8 +102,18 @@ copy the **Client ID** and **Client secret** from the app's Settings into
 access token (client credentials grant), caches it, and mints a fresh one before
 the 24-hour expiry — nothing to renew by hand. The app and the store must belong
 to the same Dev Dashboard organization, or Shopify answers `shop_not_permitted`.
-An older admin-created app's `shpat_` token still works via
-`SHOPIFY_ADMIN_ACCESS_TOKEN`.
+
+```bash
+npm run shopify:token                 # check the Client ID + secret and the scopes
+npm run shopify:token -- --permanent  # one-time browser approval → permanent shpat_ token
+```
+
+`--permanent` runs the authorization code grant: it prints an approval link,
+verifies Shopify's signature on the redirect, exchanges the code for a
+non-expiring `shpat_` token, and saves it to `.env` as
+`SHOPIFY_ADMIN_ACCESS_TOKEN`. With a token set, the app uses it and the Client
+secret is no longer bundled. The redirect URL (`https://example.com/callback` by
+default) must be registered on the app version in the Dev Dashboard.
 
 For a wider rollout, set `API_PROXY_URL` to your own backend: both clients then
 tunnel through it (`/shopify`, `/bosta`) and **no credentials are bundled into the
@@ -116,7 +126,7 @@ server-side, which is what the proxy path is for.
 ## Tests
 
 ```bash
-npm test          # typecheck + 108 logic tests
+npm test          # typecheck + 122 logic and OAuth tests
 npm run verify    # live API checks against the real accounts
 npm run bundle:android
 ```

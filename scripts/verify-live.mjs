@@ -76,10 +76,10 @@ async function bosta(method, path, payload) {
 
 section('Configuration');
 SHOP ? ok('SHOPIFY_STORE_DOMAIN set', SHOP) : fail('SHOPIFY_STORE_DOMAIN missing');
-if (CLIENT_ID && CLIENT_SECRET) {
+if (STATIC_TOKEN) {
+  ok('SHOPIFY_ADMIN_ACCESS_TOKEN set', 'permanent token');
+} else if (CLIENT_ID && CLIENT_SECRET) {
   ok('SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET set', 'client credentials grant');
-} else if (STATIC_TOKEN) {
-  ok('SHOPIFY_ADMIN_ACCESS_TOKEN set', 'legacy admin-created app');
 } else {
   fail('Shopify credentials missing', 'Set SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET from the Dev Dashboard.');
 }
@@ -89,7 +89,7 @@ if (!SHOP || (!(CLIENT_ID && CLIENT_SECRET) && !STATIC_TOKEN)) {
   process.exit(1);
 }
 
-if (CLIENT_ID && CLIENT_SECRET) {
+if (!STATIC_TOKEN && CLIENT_ID && CLIENT_SECRET) {
   section('Shopify token exchange');
   try {
     const res = await fetch(`https://${SHOP}/admin/oauth/access_token`, {

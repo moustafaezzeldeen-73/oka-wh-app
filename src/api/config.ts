@@ -33,9 +33,14 @@ export const CONFIG = {
 
 export const usingProxy = CONFIG.proxyUrl.length > 0;
 
-/** Client credentials win over a static token when both are present. */
+/**
+ * A permanent `shpat_` token wins when present; otherwise the Client ID +
+ * secret are exchanged for 24-hour tokens.
+ */
 export const usingClientCredentials =
-  CONFIG.shopify.clientId.length > 0 && CONFIG.shopify.clientSecret.length > 0;
+  CONFIG.shopify.token.length === 0 &&
+  CONFIG.shopify.clientId.length > 0 &&
+  CONFIG.shopify.clientSecret.length > 0;
 
 /** Which credentials are missing, so the UI can say so precisely. */
 export function missingConfig(): string[] {

@@ -65,9 +65,13 @@ module.exports = ({ config }) => ({
   ],
   extra: {
     shopifyStoreDomain: process.env.SHOPIFY_STORE_DOMAIN || '',
-    shopifyClientId: process.env.SHOPIFY_CLIENT_ID || '',
-    shopifyClientSecret: process.env.SHOPIFY_CLIENT_SECRET || '',
     shopifyAdminToken: process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || '',
+    // With a permanent token the app never needs the Client secret, so it is
+    // left out of the bundle entirely.
+    shopifyClientId: process.env.SHOPIFY_ADMIN_ACCESS_TOKEN ? '' : process.env.SHOPIFY_CLIENT_ID || '',
+    shopifyClientSecret: process.env.SHOPIFY_ADMIN_ACCESS_TOKEN
+      ? ''
+      : process.env.SHOPIFY_CLIENT_SECRET || '',
     shopifyApiVersion: process.env.SHOPIFY_API_VERSION || '2026-07',
     bostaApiKey: process.env.BOSTA_API_KEY || '',
     bostaBaseUrl: process.env.BOSTA_BASE_URL || 'https://app.bosta.co/api/v2',
