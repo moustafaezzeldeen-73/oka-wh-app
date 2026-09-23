@@ -17,6 +17,7 @@
     "src/state/selectors.ts",
     "src/i18n/strings.ts",
     "src/theme/tokens.ts",
-    "src/api/shopify.ts"
+    "src/api/shopify.ts",
+    "src/api/shopifyToken.ts"
   ]
 }

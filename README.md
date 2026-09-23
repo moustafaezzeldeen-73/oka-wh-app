@@ -91,19 +91,32 @@ you can confirm the timeline entry appears in Shopify admin.
 ### Credentials
 
 Keys live in `.env` (git-ignored) and reach the app through `app.config.js` →
-`expo-constants`. See `.env.example` for the exact Shopify scopes required.
+`expo-constants`.
+
+**Shopify** no longer lets merchants create custom apps in the admin, so there is
+no permanent `shpat_` token to paste in. Create the app in the
+[Dev Dashboard](https://dev.shopify.com) instead: select the scopes listed in
+`.env.example` on the app's version, release it, install it on the store, then
+copy the **Client ID** and **Client secret** from the app's Settings into
+`SHOPIFY_CLIENT_ID` / `SHOPIFY_CLIENT_SECRET`. The app exchanges them for an
+access token (client credentials grant), caches it, and mints a fresh one before
+the 24-hour expiry — nothing to renew by hand. The app and the store must belong
+to the same Dev Dashboard organization, or Shopify answers `shop_not_permitted`.
+An older admin-created app's `shpat_` token still works via
+`SHOPIFY_ADMIN_ACCESS_TOKEN`.
 
 For a wider rollout, set `API_PROXY_URL` to your own backend: both clients then
 tunnel through it (`/shopify`, `/bosta`) and **no credentials are bundled into the
-app at all**. Screen code is unchanged either way. Bundling an Admin API token
-into a handset is reasonable for a small internal fleet and standard practice for
-this kind of tool, but it does mean anyone with the APK can read the store — the
-proxy path exists for when that trade stops being acceptable.
+app at all**. Screen code is unchanged either way. With direct access, the client
+secret ships inside the app bundle, so anyone with the build can mint tokens for
+the store until the secret is rotated. That is a reasonable trade for testing
+and a small internal fleet; Shopify's own guidance is to keep the secret
+server-side, which is what the proxy path is for.
 
 ## Tests
 
 ```bash
-npm test          # typecheck + 94 logic tests
+npm test          # typecheck + 108 logic tests
 npm run verify    # live API checks against the real accounts
 npm run bundle:android
 ```

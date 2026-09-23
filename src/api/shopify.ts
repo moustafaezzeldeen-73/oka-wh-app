@@ -1,5 +1,6 @@
-import { CONFIG, usingProxy } from './config';
+import { CONFIG, usingClientCredentials, usingProxy } from './config';
 import { ApiError, fetchJson } from './http';
+import { createTokenSource, ShopifyTokenError } from './shopifyToken';
 
 type GraphQLResponse<T> = {
   data?: T;
@@ -13,9 +14,28 @@ function endpoint(): string {
   return `https://${domain}/admin/api/${CONFIG.shopify.apiVersion}/graphql.json`;
 }
 
-function headers(): Record<string, string> {
+const tokens = usingClientCredentials
+  ? createTokenSource({
+      shopDomain: CONFIG.shopify.domain,
+      clientId: CONFIG.shopify.clientId,
+      clientSecret: CONFIG.shopify.clientSecret,
+      fetcher: (url, init) => fetch(url, init),
+    })
+  : null;
+
+async function accessToken(): Promise<string> {
+  if (!tokens) return CONFIG.shopify.token;
+  try {
+    return await tokens.get();
+  } catch (err) {
+    if (err instanceof ShopifyTokenError) throw new ApiError('shopify', err.status, err.message);
+    throw err;
+  }
+}
+
+async function headers(): Promise<Record<string, string>> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (!usingProxy) h['X-Shopify-Access-Token'] = CONFIG.shopify.token;
+  if (!usingProxy) h['X-Shopify-Access-Token'] = await accessToken();
   return h;
 }
 
@@ -23,11 +43,25 @@ export async function shopifyGraphQL<T>(
   query: string,
   variables: Record<string, unknown> = {},
 ): Promise<T> {
-  const res = await fetchJson<GraphQLResponse<T>>(
-    endpoint(),
-    { method: 'POST', headers: headers(), body: JSON.stringify({ query, variables }) },
-    usingProxy ? 'proxy' : 'shopify',
-  );
+  const send = async () =>
+    fetchJson<GraphQLResponse<T>>(
+      endpoint(),
+      { method: 'POST', headers: await headers(), body: JSON.stringify({ query, variables }) },
+      usingProxy ? 'proxy' : 'shopify',
+    );
+
+  let res: GraphQLResponse<T>;
+  try {
+    res = await send();
+  } catch (err) {
+    // A rotated secret or a token Shopify retired early: mint a fresh one once.
+    if (tokens && err instanceof ApiError && err.status === 401) {
+      tokens.invalidate();
+      res = await send();
+    } else {
+      throw err;
+    }
+  }
 
   if (res.errors?.length) {
     throw new ApiError('shopify', 200, res.errors.map((e) => e.message).join('; '));

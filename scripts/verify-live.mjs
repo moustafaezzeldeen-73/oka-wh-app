@@ -27,8 +27,11 @@ try {
   process.exit(1);
 }
 
-const SHOP = env.SHOPIFY_STORE_DOMAIN;
-const TOKEN = env.SHOPIFY_ADMIN_ACCESS_TOKEN;
+const SHOP = (env.SHOPIFY_STORE_DOMAIN || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+const CLIENT_ID = env.SHOPIFY_CLIENT_ID;
+const CLIENT_SECRET = env.SHOPIFY_CLIENT_SECRET;
+const STATIC_TOKEN = env.SHOPIFY_ADMIN_ACCESS_TOKEN;
+let TOKEN = STATIC_TOKEN;
 const VERSION = env.SHOPIFY_API_VERSION || '2026-07';
 const BOSTA_KEY = env.BOSTA_API_KEY;
 const BOSTA_URL = (env.BOSTA_BASE_URL || 'https://app.bosta.co/api/v2').replace(/\/$/, '');
@@ -72,16 +75,58 @@ async function bosta(method, path, payload) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 section('Configuration');
-for (const [name, value] of [
-  ['SHOPIFY_STORE_DOMAIN', SHOP],
-  ['SHOPIFY_ADMIN_ACCESS_TOKEN', TOKEN],
-  ['BOSTA_API_KEY', BOSTA_KEY],
-]) {
-  value ? ok(`${name} set`) : fail(`${name} missing`);
+SHOP ? ok('SHOPIFY_STORE_DOMAIN set', SHOP) : fail('SHOPIFY_STORE_DOMAIN missing');
+if (CLIENT_ID && CLIENT_SECRET) {
+  ok('SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET set', 'client credentials grant');
+} else if (STATIC_TOKEN) {
+  ok('SHOPIFY_ADMIN_ACCESS_TOKEN set', 'legacy admin-created app');
+} else {
+  fail('Shopify credentials missing', 'Set SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET from the Dev Dashboard.');
 }
-if (failures) {
-  console.log('\nFill in .env before re-running.\n');
+BOSTA_KEY ? ok('BOSTA_API_KEY set') : fail('BOSTA_API_KEY missing', 'Bosta checks will be skipped.');
+if (!SHOP || (!(CLIENT_ID && CLIENT_SECRET) && !STATIC_TOKEN)) {
+  console.log('\nFill in the Shopify values in .env before re-running.\n');
   process.exit(1);
+}
+
+if (CLIENT_ID && CLIENT_SECRET) {
+  section('Shopify token exchange');
+  try {
+    const res = await fetch(`https://${SHOP}/admin/oauth/access_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+      }).toString(),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+    const d = JSON.parse(text);
+    TOKEN = d.access_token;
+    ok('client credentials exchanged for an access token', `expires in ${Math.round((d.expires_in ?? 0) / 3600)}h`);
+
+    const granted = new Set(String(d.scope ?? '').split(',').map((x) => x.trim()).filter(Boolean));
+    const has = (s) => granted.has(s) || granted.has(s.replace(/^read_/, 'write_'));
+    const needed = ['read_orders', 'write_orders', 'read_order_edits', 'write_order_edits', 'read_products', 'read_customers', 'read_files', 'write_files'];
+    const missing = needed.filter((s) => !has(s));
+    missing.length
+      ? fail('scopes missing on the app version', `${missing.join(', ')} — add them in the Dev Dashboard, release a new version, and approve it on the store`)
+      : ok('all required scopes granted');
+  } catch (e) {
+    const m = String(e.message);
+    const hint = m.includes('shop_not_permitted')
+      ? 'The app and the store must be in the same Dev Dashboard organization.'
+      : m.includes('invalid_client')
+        ? 'Client ID or Client secret is wrong — recopy both from Dev Dashboard → app → Settings.'
+        : m.includes('not installed') || m.includes('app_not_installed')
+          ? 'Install the app on the store from the Dev Dashboard first.'
+          : '';
+    fail('token exchange failed', hint ? `${m}\n      ${hint}` : m);
+    console.log('\nFix the problem above before re-running.\n');
+    process.exit(1);
+  }
 }
 
 let orders = [];
@@ -133,7 +178,9 @@ try {
 }
 
 section('Bosta API');
-try {
+if (!BOSTA_KEY) {
+  console.log('  \x1b[2mskipped — BOSTA_API_KEY not set\x1b[0m');
+} else try {
   deliveries = (await bosta('POST', '/deliveries/search', { limit: 100, pageId: 1, page: 1 }))
     .deliveries ?? [];
   ok('authenticated', `${deliveries.length} recent deliveries`);
@@ -158,7 +205,9 @@ if (deliveries.length) {
 }
 
 section('Shopify ↔ Bosta join');
-{
+if (!BOSTA_KEY) {
+  console.log('  \x1b[2mskipped — needs BOSTA_API_KEY\x1b[0m');
+} else {
   const byRef = new Map();
   for (const d of deliveries) {
     const key = (d.businessReference ?? '').replace(/^#/, '').toLowerCase();

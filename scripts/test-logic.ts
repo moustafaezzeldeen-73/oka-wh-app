@@ -27,6 +27,7 @@ import {
 } from '../src/api/activityLog';
 import { applyFilter, callStatus, contactHistory, orderPhotos } from '../src/state/selectors';
 import type { ShopifyOrder } from '../src/api/shopify';
+import { createTokenSource, ShopifyTokenError, type TokenFetcher } from '../src/api/shopifyToken';
 
 let passed = 0;
 let failed = 0;
@@ -440,7 +441,102 @@ eq('rounds to whole EGP', money(674.4), '674');
 eq('thousands separator', money(12500), '12,500');
 eq('zero', money(0), '0');
 
-console.log(
-  `\n\x1b[1m${failed === 0 ? '\x1b[32mAll green' : '\x1b[31mFailures'}\x1b[0m — ${passed} passed, ${failed} failed\n`,
-);
-process.exit(failed === 0 ? 0 : 1);
+async function tokenTests() {
+  section('Shopify client credentials token');
+
+  type Call = { url: string; body: string };
+  const calls: Call[] = [];
+  let clock = 1_000_000;
+  let reply: { status: number; body: string } = {
+    status: 200,
+    body: JSON.stringify({ access_token: 'shpat_first', scope: 'read_orders,write_orders', expires_in: 86399 }),
+  };
+  const fetcher: TokenFetcher = async (url, init) => {
+    calls.push({ url, body: init.body });
+    const r = reply;
+    return { ok: r.status < 400, status: r.status, text: async () => r.body };
+  };
+  const src = createTokenSource({
+    shopDomain: 'https://756009.myshopify.com/',
+    clientId: 'cid',
+    clientSecret: 'shpss_x',
+    fetcher,
+    now: () => clock,
+  });
+
+  eq('first call mints a token', await src.get(), 'shpat_first');
+  eq('hits the store token endpoint', calls[0]?.url, 'https://756009.myshopify.com/admin/oauth/access_token');
+  check('sends grant_type=client_credentials', calls[0]?.body.includes('grant_type=client_credentials'));
+  check('sends the client id and secret', calls[0]?.body.includes('client_id=cid') && calls[0]?.body.includes('client_secret=shpss_x'));
+  eq('reports granted scopes', src.grantedScope(), 'read_orders,write_orders');
+
+  await src.get();
+  eq('cached token is reused', calls.length, 1);
+
+  clock += 23 * 3600 * 1000;
+  await src.get();
+  eq('still cached at 23h', calls.length, 1);
+
+  reply = { status: 200, body: JSON.stringify({ access_token: 'shpat_second', expires_in: 86399 }) };
+  clock += 56 * 60 * 1000; // 23h56m — inside the 5-minute refresh margin
+  eq('refreshed before the 24h expiry', await src.get(), 'shpat_second');
+  eq('exactly one refresh', calls.length, 2);
+
+  src.invalidate();
+  reply = { status: 200, body: JSON.stringify({ access_token: 'shpat_third', expires_in: 86399 }) };
+  const [a, b, c] = await Promise.all([src.get(), src.get(), src.get()]);
+  check('concurrent callers share one exchange', a === 'shpat_third' && b === a && c === a && calls.length === 3);
+
+  const failing = createTokenSource({
+    shopDomain: '756009.myshopify.com',
+    clientId: 'cid',
+    clientSecret: 'bad',
+    fetcher: async () => ({
+      ok: false,
+      status: 400,
+      text: async () => '{"error":"shop_not_permitted","error_description":"Client credentials cannot be performed on this shop."}',
+    }),
+  });
+  try {
+    await failing.get();
+    check('shop_not_permitted surfaces as an error', false);
+  } catch (err) {
+    check('shop_not_permitted surfaces as ShopifyTokenError', err instanceof ShopifyTokenError);
+    check('error explains the organization requirement', String((err as Error).message).includes('same organization'));
+  }
+
+  const unauthorized = createTokenSource({
+    shopDomain: '756009.myshopify.com',
+    clientId: 'cid',
+    clientSecret: 'wrong',
+    fetcher: async () => ({ ok: false, status: 401, text: async () => '{"error":"invalid_client"}' }),
+  });
+  try {
+    await unauthorized.get();
+  } catch (err) {
+    check('bad secret explains where to recopy it', String((err as Error).message).includes('Dev Dashboard'));
+  }
+
+  // A failed exchange must not wedge future attempts.
+  let attempts = 0;
+  const flaky = createTokenSource({
+    shopDomain: '756009.myshopify.com',
+    clientId: 'cid',
+    clientSecret: 's',
+    fetcher: async () => {
+      attempts++;
+      return attempts === 1
+        ? { ok: false, status: 503, text: async () => 'unavailable' }
+        : { ok: true, status: 200, text: async () => JSON.stringify({ access_token: 'shpat_ok', expires_in: 86399 }) };
+    },
+  });
+  await flaky.get().catch(() => undefined);
+  eq('recovers after a failed exchange', await flaky.get(), 'shpat_ok');
+}
+
+tokenTests().then(() => {
+  console.log(
+    `\n\x1b[1m${failed === 0 ? '\x1b[32mAll green' : '\x1b[31mFailures'}\x1b[0m — ${passed} passed, ${failed} failed\n`,
+  );
+  process.exit(failed === 0 ? 0 : 1);
+});
