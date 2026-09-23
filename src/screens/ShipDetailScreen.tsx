@@ -7,12 +7,12 @@ import { useApp } from '../state/AppState';
 import { contactHistory } from '../state/selectors';
 import { C, GUTTER, R } from '../theme/tokens';
 import { HistoryRow } from './OrderDetailScreen';
-import { CourierCard, Timeline, usePhaseTimes } from './TrackScreen';
+import { CourierCard, ProblemCard, Timeline, useLiveTracking } from './TrackScreen';
 
 /** Read-only shipment view reached from the phone search. */
 export function ShipDetailScreen({ order }: { order: Order }) {
   const { L, ar, go, openSheet, setContactTarget } = useApp();
-  const { times, phase } = usePhaseTimes(order);
+  const { times, phase, courier, problem } = useLiveTracking(order);
   const history = contactHistory(order);
 
   return (
@@ -71,17 +71,19 @@ export function ShipDetailScreen({ order }: { order: Order }) {
 
         <Txt f="sansSemi" size={13} color={C.ink50} style={{ marginTop: 20, marginBottom: 8, marginHorizontal: 2 }}>
           {L.trackTitle}
+          {order.carrierName ? ` · ${order.carrierName}` : ''}
         </Txt>
+        {problem ? <ProblemCard problem={problem} L={L} /> : null}
         <Timeline phase={phase} times={times} ar={ar} dotSize={16} />
 
         <Txt f="sansSemi" size={13} color={C.ink50} style={{ marginTop: 20, marginBottom: 8, marginHorizontal: 2 }}>
           {L.courier}
         </Txt>
-        {order.courier ? (
+        {courier ? (
           <CourierCard
             compact
-            name={order.courier.name}
-            phone={order.courier.phone}
+            name={courier.name}
+            phone={courier.phone}
             L={L}
             onCall={() => {
               setContactTarget('courier');

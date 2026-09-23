@@ -27,6 +27,7 @@ import {
 import { money, type Order } from '../api/model';
 import { useApp } from '../state/AppState';
 import { contactHistory, orderPhotos } from '../state/selectors';
+import { ProblemCard } from './TrackScreen';
 import { C, GUTTER, R, clarityColor, rankColor } from '../theme/tokens';
 
 export function OrderDetailScreen({ order }: { order: Order }) {
@@ -38,6 +39,7 @@ export function OrderDetailScreen({ order }: { order: Order }) {
     setContactTarget,
     markReady,
     cancelOrder,
+    syncCod,
     resetDraft,
     showToast,
     busy,
@@ -82,7 +84,7 @@ export function OrderDetailScreen({ order }: { order: Order }) {
         {/* ── AWB ── */}
         <Card style={{ padding: 18, alignItems: 'center', borderRadius: R.panel }}>
           <Txt f="sansMedium" size={11} color={C.ink40} ls={0.66}>
-            {L.awb} · {order.carrier}
+            {L.awb} · {order.carrierName || L.notBooked}
           </Txt>
           <Pressable
             onPress={() => {
@@ -97,6 +99,54 @@ export function OrderDetailScreen({ order }: { order: Order }) {
           </Pressable>
           <Barcode value={order.awb} height={44} color={C.ink} />
         </Card>
+
+        {/* ── courier COD differs from Shopify ── */}
+        {order.codMismatch ? (
+          <View
+            style={{
+              backgroundColor: '#F6EFE4',
+              borderRadius: R.card,
+              padding: 14,
+              marginTop: 12,
+            }}
+          >
+            <Txt f="sansSemi" size={13} color={C.amber}>
+              {L.codMismatch}
+            </Txt>
+            <Txt size={13} color={C.ink} style={{ marginTop: 4 }}>
+              {L.codMismatchBody
+                .replace('{courier}', order.carrierName)
+                .replace('{a}', money(order.codMismatch.courier))
+                .replace('{b}', money(order.codMismatch.shopify))}
+            </Txt>
+            {!order.locked ? (
+              <Pressable
+                disabled={busy !== null}
+                onPress={() => void syncCod(order)}
+                style={({ pressed }) => ({
+                  marginTop: 10,
+                  alignSelf: 'flex-start',
+                  backgroundColor: C.amber,
+                  borderRadius: R.pill,
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  opacity: pressed || busy !== null ? 0.7 : 1,
+                })}
+              >
+                <Txt f="sansSemi" size={12} color={C.white}>
+                  {L.syncCod}
+                </Txt>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
+        {/* ── courier problem ── */}
+        {order.problem ? (
+          <View style={{ marginTop: 12 }}>
+            <ProblemCard problem={order.problem} L={L} />
+          </View>
+        ) : null}
 
         {/* ── track ── */}
         <Card

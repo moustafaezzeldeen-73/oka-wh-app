@@ -48,7 +48,7 @@ export function Toast({ message, top }: { message: string; top: number }) {
   );
 }
 
-/** Shown while a write to Shopify or Bosta is in flight. */
+/** Shown while a write to Shopify or a courier is in flight. */
 export function BusyBar({ message, top }: { message: string; top: number }) {
   return (
     <View

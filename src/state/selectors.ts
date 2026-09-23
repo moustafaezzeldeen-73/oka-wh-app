@@ -23,6 +23,9 @@ export function applyFilter(orders: Order[], key: FilterKey): Order[] {
       return orders.filter((o) => o.status === 'cancelled');
     case 'readypickup':
       return orders.filter((o) => o.tags.some((t) => t.toLowerCase() === 'oka-ready'));
+    case 'bosta':
+    case 'jt':
+      return orders.filter((o) => o.carrier === key);
     case 'notcalled':
     case 'notanswered':
     case 'answered':

@@ -10,15 +10,11 @@ import React, {
 
 import { logActivity, makeEntry, appendActivity } from '../api/activity';
 import { processCall, type CallArgs } from '../api/callProcessing';
-import {
-  cancelDelivery,
-  searchDeliveries,
-  updateDelivery,
-  updateDeliveryCod,
-} from '../api/bosta';
-import { isConfigured, missingConfig } from '../api/config';
+import { cancelDelivery, updateDelivery, updateDeliveryCod } from '../api/bosta';
+import { isConfigured, missingConfig, missingCouriers } from '../api/config';
+import { buildPickInfo, cancelJtOrder, updateJtOrder } from '../api/jt';
 import { uploadToShopify } from '../api/media';
-import type { Order } from '../api/model';
+import { itemsOf, shopifyCodOf, type Order, type OrderItem } from '../api/model';
 import {
   fetchCatalog,
   loadOrders,
@@ -28,6 +24,7 @@ import {
 } from '../api/repository';
 import {
   cancelShopifyOrder,
+  fetchOrderById,
   orderEditAddVariant,
   orderEditBegin,
   orderEditCommit,
@@ -60,10 +57,23 @@ export type EditDraft = {
 
 const emptyDraft = (): EditDraft => ({ quantities: {}, additions: [], address: null });
 
+/** The item list J&T prints on the label, priced after every discount. */
+function jtPickInfo(items: OrderItem[], shipping: number, cod: number): string {
+  const subtotal = items.reduce((s, i) => s + i.netUnitPrice * i.quantity, 0);
+  return buildPickInfo(
+    items.map((i) => ({ name: i.title, qty: i.quantity, unitPrice: i.netUnitPrice })),
+    subtotal,
+    shipping,
+    cod,
+  );
+}
+
 type Ctx = {
   // config
   configured: boolean;
   configGaps: string[];
+  /** Couriers without keys, plus any courier that failed on the last load. */
+  courierNotices: string[];
 
   // language
   lang: Lang;
@@ -126,6 +136,8 @@ type Ctx = {
   markReady: (order: Order) => Promise<void>;
   cancelOrder: (order: Order) => Promise<void>;
   saveEdit: (order: Order) => Promise<void>;
+  /** Push Shopify's balance to the courier when the two disagree. */
+  syncCod: (order: Order) => Promise<void>;
   logCall: (order: Order, args: CallArgs) => Promise<void>;
   logWhatsApp: (order: Order, title: string, body: string, phone: string) => Promise<void>;
   attachPhoto: (order: Order, uri: string) => Promise<void>;
@@ -150,6 +162,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
 
   const [screen, setScreen] = useState<Screen>('list');
   const [sheet, setSheet] = useState<Sheet>(null);
@@ -167,6 +180,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configGaps = useMemo(() => missingConfig(), []);
   const configured = configGaps.length === 0;
+  const courierNotices = useMemo(
+    () => [...missingCouriers().map((c) => `${c} — not configured`), ...loadWarnings],
+    [loadWarnings],
+  );
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -194,6 +211,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       try {
         const res = await loadOrders({ ar });
         setOrders(res.orders);
+        setLoadWarnings(res.warnings);
         setError(null);
         setSelectedId((cur) =>
           cur && res.orders.some((o) => o.shopifyId === cur)
@@ -333,25 +351,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (order: Order) => {
       setBusy(L.syncing);
       try {
-        // Terminate the shipment first — a cancelled Shopify order with a live
-        // Bosta parcel still on a truck is the expensive failure mode.
-        if (order.bostaId) {
-          try {
+        // Cancel the shipment first — a cancelled Shopify order with a live
+        // parcel still on a courier's truck is the expensive failure mode.
+        let courierCancelled = false;
+        if (order.awb && !order.bostaId && !order.jtOrder) {
+          throw new Error(
+            `${order.carrierName} shipment ${order.awb} could not be loaded — cancel it with ${order.carrierName} first`,
+          );
+        }
+        try {
+          if (order.bostaId) {
             await cancelDelivery(order.bostaId);
-          } catch (err) {
-            await logActivity(
-              order.shopifyId,
-              'cancel',
-              `Bosta termination failed: ${err instanceof Error ? err.message : 'unknown'}`,
-              { meta: { awb: order.awb } },
-            );
-            throw err;
+            courierCancelled = true;
+          } else if (order.jtOrder) {
+            await cancelJtOrder(order.jtOrder, 'Cancelled from OKA warehouse app');
+            courierCancelled = true;
           }
+        } catch (err) {
+          await logActivity(
+            order.shopifyId,
+            'cancel',
+            `${order.carrierName} cancellation failed: ${err instanceof Error ? err.message : 'unknown'}`,
+            { meta: { awb: order.awb, carrier: order.carrier } },
+          );
+          throw err;
         }
         await cancelShopifyOrder(order.shopifyId);
-        await logActivity(order.shopifyId, 'cancel', 'Order cancelled from the warehouse app', {
-          meta: { awb: order.awb, bostaTerminated: Boolean(order.bostaId) },
-        });
+        await logActivity(
+          order.shopifyId,
+          'cancel',
+          courierCancelled
+            ? `Order cancelled from the warehouse app; ${order.carrierName} shipment ${order.awb} cancelled`
+            : 'Order cancelled from the warehouse app',
+          { meta: { awb: order.awb, carrier: order.carrier, courierCancelled } },
+        );
         showToast(L.orderCancelled);
         await refresh();
         go('list');
@@ -405,17 +438,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           await orderEditCommit(calc.id, `OKA Warehouse app: ${summary.join('; ')}`);
         }
 
-        // Keep Bosta's COD and address in step with the edited order.
-        const totals = draftTotals(order);
+        // Keep the courier's COD and address in step with the edited order.
+        // Shopify's own recalculated balance is the new COD — it nets out
+        // every discount, which the draft's list prices can't.
+        const itemsEdited = changedQty.length > 0 || draft.additions.length > 0;
+        let cod = Math.round(order.cod);
+        let items: OrderItem[] = order.items;
+        if (itemsEdited) {
+          const fresh = await fetchOrderById(order.shopifyId).catch(() => null);
+          cod = Math.round(fresh ? shopifyCodOf(fresh) : draftTotals(order).cod);
+          if (fresh) items = itemsOf(fresh);
+        }
+        const codChanged = cod !== Math.round(order.cod);
+        const refused = (what: string, err: unknown) =>
+          summary.push(
+            `${what} update refused by ${order.carrierName} (${err instanceof Error ? err.message : 'unknown'})`,
+          );
+
         if (order.bostaId) {
-          if (Math.round(totals.cod) !== Math.round(order.cod)) {
+          if (codChanged) {
             try {
-              await updateDeliveryCod(order.bostaId, Math.round(totals.cod));
-              summary.push(`COD ${Math.round(order.cod)} → ${Math.round(totals.cod)} EGP`);
+              await updateDeliveryCod(order.bostaId, cod);
+              summary.push(`COD ${Math.round(order.cod)} → ${cod} EGP`);
             } catch (err) {
-              summary.push(
-                `COD update refused by Bosta (${err instanceof Error ? err.message : 'unknown'})`,
-              );
+              refused('COD', err);
             }
           }
           if (addressChanged && draft.address) {
@@ -425,11 +471,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               });
               summary.push(`Address → ${draft.address}`);
             } catch (err) {
-              summary.push(
-                `Address update refused by Bosta (${err instanceof Error ? err.message : 'unknown'})`,
-              );
+              refused('Address', err);
             }
           }
+        } else if (order.jtOrder && (codChanged || itemsEdited || addressChanged)) {
+          // J&T takes the whole order again; the label's item list is rebuilt
+          // so the courier's invoice matches what is in the box.
+          try {
+            await updateJtOrder(order.jtOrder, order.name, {
+              cod,
+              street: addressChanged && draft.address ? draft.address : undefined,
+              pickInfo: jtPickInfo(items, order.shipping, cod),
+            });
+            if (codChanged) summary.push(`COD ${Math.round(order.cod)} → ${cod} EGP`);
+            if (addressChanged && draft.address) summary.push(`Address → ${draft.address}`);
+            if (itemsEdited) summary.push('J&T invoice updated');
+          } catch (err) {
+            refused(addressChanged && !codChanged ? 'Address' : 'COD', err);
+          }
+        } else if (order.awb && (codChanged || addressChanged)) {
+          summary.push(`${order.carrierName} not updated — shipment ${order.awb} could not be loaded`);
         }
 
         const entries = [makeEntry('edit', `Order edited — ${summary.join('; ')}`)];
@@ -453,6 +514,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [L, draft, draftTotals, go, refreshOne, resetDraft, showToast],
+  );
+
+  const syncCod = useCallback(
+    async (order: Order) => {
+      const mismatch = order.codMismatch;
+      if (!mismatch) return;
+      setBusy(L.syncing);
+      try {
+        const cod = Math.round(mismatch.shopify);
+        if (order.bostaId) {
+          await updateDeliveryCod(order.bostaId, cod);
+        } else if (order.jtOrder) {
+          await updateJtOrder(order.jtOrder, order.name, {
+            cod,
+            pickInfo: jtPickInfo(order.items, order.shipping, cod),
+          });
+        } else {
+          throw new Error(`${order.carrierName} shipment ${order.awb ?? ''} could not be loaded`);
+        }
+        await logActivity(
+          order.shopifyId,
+          'edit',
+          `${order.carrierName} COD ${Math.round(mismatch.courier)} → ${cod} EGP, matched to the Shopify balance`,
+          { meta: { awb: order.awb, carrier: order.carrier } },
+        );
+        showToast(L.codSynced);
+        await refreshOne(order.shopifyId);
+      } catch (err) {
+        showToast(`${L.saveFailed}: ${err instanceof Error ? err.message : ''}`.trim());
+      } finally {
+        setBusy(null);
+      }
+    },
+    [L, refreshOne, showToast],
   );
 
   const logCall = useCallback<Ctx['logCall']>(
@@ -540,6 +635,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     () => ({
       configured,
       configGaps,
+      courierNotices,
       lang,
       ar,
       L,
@@ -582,6 +678,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       markReady,
       cancelOrder,
       saveEdit,
+      syncCod,
       logCall,
       logWhatsApp,
       attachPhoto,
@@ -590,6 +687,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [
       configured,
       configGaps,
+      courierNotices,
       lang,
       ar,
       L,
@@ -627,6 +725,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       markReady,
       cancelOrder,
       saveEdit,
+      syncCod,
       logCall,
       logWhatsApp,
       attachPhoto,

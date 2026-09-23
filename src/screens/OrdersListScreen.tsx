@@ -11,7 +11,7 @@ import {
 
 import { Chip, Card, Mono, Thumb, Txt } from '../components/primitives';
 import { SearchIcon } from '../components/Icons';
-import { money, type Order } from '../api/model';
+import { money, type CarrierKey, type Order } from '../api/model';
 import { searchOrders } from '../api/repository';
 import { FILTER_KEYS, FILTER_LABELS } from '../i18n/strings';
 import { useApp } from '../state/AppState';
@@ -37,6 +37,7 @@ export function OrdersListScreen() {
     go,
     configured,
     configGaps,
+    courierNotices,
   } = useApp();
 
   const visible = useMemo(
@@ -212,6 +213,11 @@ export function OrdersListScreen() {
               </Txt>
             </View>
           }
+          ListHeaderComponent={
+            courierNotices.length > 0 ? (
+              <CourierNotices title={L.courierNotice} notices={courierNotices} />
+            ) : null
+          }
           renderItem={({ item }) => <OrderRow order={item} ar={ar} L={L} onPress={openOrder} />}
         />
       )}
@@ -244,14 +250,24 @@ function OrderRow({
 
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-          <Mono size={19} lh={19} ls={-0.4}>
+          <Mono size={19} lh={19} ls={-0.4} numberOfLines={1} style={{ flexShrink: 1 }}>
             {order.awb ?? order.name}
           </Mono>
           <Chip status={order.status} ar={ar} />
+          {order.carrier ? <CarrierTag carrier={order.carrier} /> : null}
         </View>
         <Txt size={13} color={C.ink55} numberOfLines={1}>
           {order.customerName} · {order.city}
         </Txt>
+        {order.problem ? (
+          <Txt f="sansMedium" size={12} color={C.red} numberOfLines={1} style={{ marginTop: 2 }}>
+            {order.problem.note || order.problem.reason}
+          </Txt>
+        ) : order.codMismatch ? (
+          <Mono f="monoMedium" size={11} color={C.amber} style={{ marginTop: 2 }}>
+            COD {money(order.codMismatch.courier)} ≠ {money(order.codMismatch.shopify)}
+          </Mono>
+        ) : null}
       </View>
 
       <View style={{ alignItems: ar ? 'flex-start' : 'flex-end' }}>
@@ -261,6 +277,50 @@ function OrderRow({
         </Txt>
       </View>
     </Card>
+  );
+}
+
+/** Which courier has the parcel — J&T in its red, Bosta in ink. */
+function CarrierTag({ carrier }: { carrier: CarrierKey }) {
+  const jt = carrier === 'jt';
+  return (
+    <View
+      style={{
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: R.chip,
+        borderWidth: 1,
+        borderColor: jt ? C.red : C.borderInput,
+      }}
+    >
+      <Mono f="monoMedium" size={10} color={jt ? C.red : C.ink55}>
+        {jt ? 'J&T' : 'BOSTA'}
+      </Mono>
+    </View>
+  );
+}
+
+/** A courier without keys, or one that failed to answer on the last refresh. */
+function CourierNotices({ title, notices }: { title: string; notices: string[] }) {
+  return (
+    <View
+      style={{
+        backgroundColor: '#F6EFE4',
+        borderRadius: R.card,
+        paddingVertical: 10,
+        paddingHorizontal: 13,
+        marginBottom: 2,
+      }}
+    >
+      <Txt f="sansSemi" size={12} color={C.amber}>
+        {title}
+      </Txt>
+      {notices.map((n) => (
+        <Txt key={n} size={11} color={C.amber} style={{ marginTop: 3 }}>
+          {n}
+        </Txt>
+      ))}
+    </View>
   );
 }
 

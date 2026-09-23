@@ -79,6 +79,11 @@ module.exports = ({ config }) => ({
     shopifyApiVersion: process.env.SHOPIFY_API_VERSION || '2026-07',
     bostaApiKey: process.env.BOSTA_API_KEY || '',
     bostaBaseUrl: process.env.BOSTA_BASE_URL || 'https://app.bosta.co/api/v2',
+    jtApiAccount: process.env.JT_API_ACCOUNT || '',
+    jtPrivateKey: process.env.JT_PRIVATE_KEY || '',
+    jtCustomerCode: process.env.JT_CUSTOMER_CODE || '',
+    jtCustomerPassword: process.env.JT_CUSTOMER_PASSWORD || '',
+    jtBaseUrl: process.env.JT_API_BASE_URL || 'https://openapi.jtjms-eg.com/webopenplatformapi',
     geminiApiKey: process.env.GEMINI_API_KEY || '',
     geminiModel: process.env.GEMINI_AUDIO_MODEL || 'gemini-2.5-flash',
     // Optional: route all API traffic through your own backend instead of

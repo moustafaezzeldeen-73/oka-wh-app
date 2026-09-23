@@ -9,8 +9,125 @@ import {
   timesFromTimeline,
   type BostaDelivery,
 } from './bostaState';
+import {
+  jtAttempts,
+  jtCourier,
+  jtEvents,
+  jtIsLocked,
+  jtIsTerminal,
+  jtOpenProblem,
+  jtPhase,
+  jtPhaseTimes,
+  jtStateLabel,
+  jtTimeToIso,
+  type JtEvent,
+  type JtOrder,
+  type JtProblem,
+  type JtShipment,
+} from './jtState';
 import type { ShopifyLineItem, ShopifyOrder } from './shopify';
 import type { ActivityEntry } from './activityLog';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Couriers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CarrierKey = 'bosta' | 'jt';
+
+export const CARRIER_NAME: Record<CarrierKey, string> = {
+  bosta: 'Bosta',
+  jt: 'J&T Express',
+};
+
+/**
+ * One order's parcel, from whichever courier carries it. `delivery` /
+ * `shipment` is null when the AWB is known (from Shopify) but the courier's
+ * API could not be read — no keys, or offline.
+ */
+export type Parcel =
+  | { carrier: 'bosta'; awb: string; delivery: BostaDelivery | null }
+  | { carrier: 'jt'; awb: string; shipment: JtShipment | null };
+
+export const bostaParcel = (d: BostaDelivery): Parcel => ({
+  carrier: 'bosta',
+  awb: d.trackingNumber,
+  delivery: d,
+});
+
+export const jtParcel = (s: JtShipment): Parcel => ({ carrier: 'jt', awb: s.billCode, shipment: s });
+
+/** Courier named on a Shopify tracking entry — by company, else by AWB shape. */
+export function carrierOfTracking(company: string | null, number: string | null): CarrierKey | null {
+  const c = (company ?? '').toLowerCase();
+  if (/j\s*&\s*t|j\s*and\s*t|\bjnt\b/.test(c)) return 'jt';
+  if (c.includes('bosta')) return 'bosta';
+  const n = (number ?? '').trim();
+  if (/^JEG\d+$/i.test(n)) return 'jt';
+  if (/^\d{6,12}$/.test(n)) return 'bosta';
+  return null;
+}
+
+/**
+ * The parcel OKA recorded on the Shopify order when it was fulfilled: the
+ * newest live fulfillment's tracking number and courier.
+ */
+export function parcelFromShopify(order: ShopifyOrder): { carrier: CarrierKey; awb: string } | null {
+  const live = (order.fulfillments ?? [])
+    .filter((f) => !/cancel|error|fail/i.test(f.status ?? ''))
+    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+  for (const f of live) {
+    for (const t of f.trackingInfo ?? []) {
+      const carrier = carrierOfTracking(t.company, t.number);
+      if (carrier && t.number) return { carrier, awb: t.number.trim() };
+    }
+  }
+  return null;
+}
+
+function createdMs(p: Parcel): number {
+  const raw =
+    p.carrier === 'bosta'
+      ? p.delivery?.createdAt
+      : (jtTimeToIso(p.shipment?.order?.createOrderTime) ?? undefined);
+  const t = raw ? new Date(raw).getTime() : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+function parcelIsTerminal(p: Parcel): boolean {
+  if (p.carrier === 'bosta') return !!p.delivery && isTerminalState(p.delivery.state?.code, p.delivery.state?.value);
+  return !!p.shipment && jtIsTerminal(p.shipment);
+}
+
+/**
+ * Which parcel an order is on. The courier recorded on the Shopify
+ * fulfillment wins; otherwise any shipment either courier holds for the
+ * order, live ones before cancelled or returned, newest first.
+ */
+export function pickParcel(opts: {
+  hint: { carrier: CarrierKey; awb: string } | null;
+  bosta: BostaDelivery | null;
+  jt: JtShipment | null;
+}): Parcel | null {
+  const { hint, bosta, jt } = opts;
+  if (hint?.carrier === 'jt') {
+    return { carrier: 'jt', awb: hint.awb, shipment: jt?.billCode === hint.awb ? jt : null };
+  }
+  if (hint?.carrier === 'bosta') {
+    return { carrier: 'bosta', awb: hint.awb, delivery: bosta?.trackingNumber === hint.awb ? bosta : null };
+  }
+  const found: Parcel[] = [];
+  if (bosta) found.push(bostaParcel(bosta));
+  if (jt) found.push(jtParcel(jt));
+  found.sort(
+    (a, b) =>
+      Number(parcelIsTerminal(a)) - Number(parcelIsTerminal(b)) || createdMs(b) - createdMs(a),
+  );
+  return found[0] ?? null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Render model
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** One row in the order's contents list. */
 export type OrderItem = {
@@ -19,6 +136,8 @@ export type OrderItem = {
   title: string;
   quantity: number;
   unitPrice: number;
+  /** After every discount — what goes on a courier's invoice. */
+  netUnitPrice: number;
   sku: string;
   image: string | null;
 };
@@ -29,10 +148,14 @@ export type Order = {
   shopifyId: string;
   /** Shopify order name, e.g. "#2623721". */
   name: string;
-  /** Bosta tracking number (AWB), or null when no shipment exists yet. */
+  /** Courier tracking number (AWB), or null when no shipment exists yet. */
   awb: string | null;
+  carrier: CarrierKey | null;
+  /** "Bosta" / "J&T Express", or '' before a courier is booked. */
+  carrierName: string;
   bostaId: string | null;
-  carrier: string;
+  /** J&T's record of the parcel; needed to cancel or resubmit it. */
+  jtOrder: JtOrder | null;
 
   // customer
   customerName: string;
@@ -47,7 +170,7 @@ export type Order = {
   shipping: number;
   currency: string;
 
-  // scoring, straight from Bosta
+  // scoring, straight from Bosta (J&T has no equivalent)
   rank: number | null;
   clarity: number | null;
   badAddress: boolean;
@@ -61,8 +184,17 @@ export type Order = {
   courier: { name: string; phone: string } | null;
   attempts: number;
   scheduledAt: string | null;
-  /** Per-phase timestamps from Bosta's timeline, indexed 0–4. */
+  /** Per-phase timestamps from the courier, indexed 0–4. */
   phaseTimes: (string | null)[];
+  /** An unresolved delivery problem the courier reported (J&T). */
+  problem: JtProblem | null;
+  /** Scan-by-scan history, newest first (J&T). */
+  events: JtEvent[];
+  /**
+   * The courier will collect a different amount than the customer owes on
+   * Shopify. Only raised while the parcel is still on its way.
+   */
+  codMismatch: { courier: number; shopify: number } | null;
 
   // contents
   items: OrderItem[];
@@ -74,7 +206,7 @@ export type Order = {
   tags: string[];
   note: string | null;
   createdAt: string;
-  /** True once Bosta has the parcel: quantities and address are frozen. */
+  /** True once the courier has the parcel: quantities and address are frozen. */
   locked: boolean;
 };
 
@@ -96,79 +228,170 @@ function initialsOf(name: string): string {
 }
 
 function itemFrom(li: ShopifyLineItem): OrderItem {
+  const unitPrice = num(li.originalUnitPriceSet?.shopMoney?.amount ?? li.variant?.price);
+  const net = li.discountedUnitPriceAfterAllDiscountsSet?.shopMoney?.amount;
   return {
     lineItemId: li.id,
     variantId: li.variant?.id ?? null,
     title: li.title,
-    quantity: li.quantity,
-    unitPrice: num(li.originalUnitPriceSet?.shopMoney?.amount ?? li.variant?.price),
+    // Order edits lower currentQuantity; quantity keeps the original count.
+    quantity: li.currentQuantity ?? li.quantity,
+    unitPrice,
+    netUnitPrice: net === undefined ? unitPrice : num(net),
     sku: li.sku ?? '',
     image: li.image?.url ?? li.variant?.image?.url ?? null,
   };
 }
 
-function addressFrom(order: ShopifyOrder, delivery: BostaDelivery | null, ar: boolean): string {
-  const drop = delivery?.dropOffAddress;
-  if (drop?.firstLine) {
-    const parts = [
-      drop.firstLine,
-      drop.secondLine,
-      drop.buildingNumber ? `عمارة ${drop.buildingNumber}` : '',
-      drop.floor ? `الدور ${drop.floor}` : '',
-      drop.apartment ? `شقة ${drop.apartment}` : '',
-    ].filter(Boolean);
-    return parts.join('، ');
-  }
+/** Current line items — edits applied, removed lines dropped. */
+export function itemsOf(order: ShopifyOrder): OrderItem[] {
+  return order.lineItems.nodes.map(itemFrom).filter((i) => i.quantity > 0);
+}
+
+/** What the customer still owes on the Shopify order: the cash to collect. */
+export function shopifyCodOf(order: ShopifyOrder): number {
+  const owed = order.totalOutstandingSet?.shopMoney?.amount;
+  return num(owed ?? order.currentTotalPriceSet?.shopMoney?.amount);
+}
+
+function shopifyAddress(order: ShopifyOrder, ar: boolean): string {
   const sa = order.shippingAddress;
   const parts = [sa?.address1, sa?.address2, ar ? '' : sa?.city].filter(Boolean);
   return parts.join(', ') || (sa?.city ?? '—');
 }
 
-function cityFrom(order: ShopifyOrder, delivery: BostaDelivery | null, ar: boolean): string {
+function bostaAddress(delivery: BostaDelivery | null): string | null {
+  const drop = delivery?.dropOffAddress;
+  if (!drop?.firstLine) return null;
+  return [
+    drop.firstLine,
+    drop.secondLine,
+    drop.buildingNumber ? `عمارة ${drop.buildingNumber}` : '',
+    drop.floor ? `الدور ${drop.floor}` : '',
+    drop.apartment ? `شقة ${drop.apartment}` : '',
+  ]
+    .filter(Boolean)
+    .join('، ');
+}
+
+function jtAddress(order: JtOrder | null): string | null {
+  const r = order?.receiver;
+  if (!r?.street) return null;
+  // The street line usually repeats the area; only add the area when it doesn't.
+  return r.area && !r.street.includes(r.area) ? `${r.street}، ${r.area}` : r.street;
+}
+
+function bostaCity(delivery: BostaDelivery | null, ar: boolean): string | null {
   const c = delivery?.dropOffAddress?.city;
-  if (c) return (ar ? c.nameAr || c.name : c.name) ?? '';
-  return order.shippingAddress?.city ?? order.shippingAddress?.province ?? '—';
+  return c ? ((ar ? c.nameAr || c.name : c.name) ?? null) : null;
+}
+
+/** What J&T and the app both need to know about a parcel, courier-neutral. */
+type Tracking = {
+  phase: number;
+  times: (string | null)[];
+  terminal: boolean;
+  locked: boolean;
+  courier: { name: string; phone: string } | null;
+  attempts: number;
+  stateValue: string;
+  stateCode: number | null;
+  problem: JtProblem | null;
+  events: JtEvent[];
+};
+
+const NO_TRACKING: Tracking = {
+  phase: 0,
+  times: [null, null, null, null, null],
+  terminal: false,
+  locked: false,
+  courier: null,
+  attempts: 0,
+  stateValue: 'Not shipped',
+  stateCode: null,
+  problem: null,
+  events: [],
+};
+
+function bostaTracking(d: BostaDelivery): Tracking {
+  // Bosta's own timeline is authoritative when present; the state-code mapping
+  // is only a fallback for list payloads, which omit it.
+  const phase = phaseFromTimeline(d.timeline) ?? phaseFromState(d.state?.code, d.state?.value);
+  return {
+    phase,
+    times: timesFromTimeline(d.timeline),
+    terminal: isTerminalState(d.state?.code, d.state?.value),
+    locked: isLockedState(d.state?.code),
+    courier: courierOf(d),
+    attempts: d.attemptsCount ?? d.numberOfAttempts ?? 0,
+    stateValue: d.state?.value ?? 'Created',
+    stateCode: d.state?.code ?? null,
+    problem: null,
+    events: [],
+  };
+}
+
+function jtTracking(s: JtShipment): Tracking {
+  return {
+    phase: jtPhase(s),
+    times: jtPhaseTimes(s),
+    terminal: jtIsTerminal(s),
+    locked: jtIsLocked(s),
+    courier: jtCourier(s),
+    attempts: jtAttempts(s),
+    stateValue: jtStateLabel(s),
+    stateCode: s.scans[0]?.scanTypeCode ?? s.order?.orderStatus ?? null,
+    problem: jtOpenProblem(s),
+    events: jtEvents(s),
+  };
+}
+
+function trackingOf(parcel: Parcel | null): Tracking {
+  if (parcel?.carrier === 'bosta' && parcel.delivery) return bostaTracking(parcel.delivery);
+  if (parcel?.carrier === 'jt' && parcel.shipment) return jtTracking(parcel.shipment);
+  if (parcel) return { ...NO_TRACKING, stateValue: 'Booked' };
+  return NO_TRACKING;
 }
 
 /**
- * Chip status, resolved from the two systems in priority order:
- * cancelled → shipment state → address quality → local "ready" tag → new.
+ * Chip status, resolved in priority order:
+ * cancelled → shipment progress → address quality → local "ready" tag → new.
  */
 function statusFrom(
   order: ShopifyOrder,
+  parcel: Parcel | null,
+  t: Tracking,
   delivery: BostaDelivery | null,
-  phase: number,
 ): ChipKey {
   if (order.cancelledAt) return 'cancelled';
-  if (delivery && isTerminalState(delivery.state?.code, delivery.state?.value)) return 'cancelled';
-  if (phase >= 4) return 'delivered';
-  if (phase >= 2) return 'transit';
-  if (phase === 1) return 'picked';
+  if (t.terminal) return 'cancelled';
+  if (t.phase >= 4) return 'delivered';
+  if (t.phase >= 2) return 'transit';
+  if (t.phase === 1) return 'picked';
   if (delivery?.dropOffAddress?.isBadAddress) return 'badaddr';
   if ((delivery?.dropOffAddress?.addressClarityScore ?? 100) < 40) return 'badaddr';
   if (order.tags.some((t) => t.toLowerCase() === 'oka-ready')) return 'ready';
-  if (delivery) return 'ready';
+  if (parcel) return 'ready';
   return 'new';
 }
 
-/** Fuse one Shopify order with its Bosta shipment into the render model. */
+/** Fuse one Shopify order with its courier shipment into the render model. */
 export function buildOrder(
   order: ShopifyOrder,
-  delivery: BostaDelivery | null,
+  parcel: Parcel | null,
   activity: ActivityEntry[],
   ar: boolean,
 ): Order {
-  // Bosta's own timeline is authoritative when present; the state-code mapping
-  // is only a fallback for list payloads, which omit it.
-  const phase = delivery
-    ? (phaseFromTimeline(delivery.timeline) ??
-      phaseFromState(delivery.state?.code, delivery.state?.value))
-    : 0;
-  const items = order.lineItems.nodes.map(itemFrom);
+  const delivery = parcel?.carrier === 'bosta' ? parcel.delivery : null;
+  const jt = parcel?.carrier === 'jt' ? (parcel.shipment?.order ?? null) : null;
+  const t = trackingOf(parcel);
+
+  const items = itemsOf(order);
   const customerName =
     order.shippingAddress?.name ??
     order.customer?.displayName ??
     delivery?.receiver?.fullName ??
+    jt?.receiver?.name ??
     '—';
 
   // The thumbnail is the highest-value line — the item that identifies the box.
@@ -181,22 +404,35 @@ export function buildOrder(
     order.shippingAddress?.phone ??
     order.customer?.phone ??
     delivery?.receiver?.phone ??
+    jt?.receiver?.mobile?.replace(/^\+20-/, '') ??
     '';
+
+  const courierCod = delivery?.cod ?? jt?.itemsValue;
+  const shopifyCod = shopifyCodOf(order);
+
+  const shopifyCity = order.shippingAddress?.city ?? order.shippingAddress?.province ?? null;
+  const city =
+    bostaCity(delivery, ar) ??
+    // J&T keeps whatever language OKA booked in — usually Arabic.
+    (ar ? (jt?.receiver?.city ?? shopifyCity) : (shopifyCity ?? jt?.receiver?.city)) ??
+    '—';
 
   return {
     shopifyId: order.id,
     name: order.name,
-    awb: delivery?.trackingNumber ?? null,
+    awb: parcel?.awb ?? null,
+    carrier: parcel?.carrier ?? null,
+    carrierName: parcel ? CARRIER_NAME[parcel.carrier] : '',
     bostaId: delivery?._id ?? null,
-    carrier: 'Bosta',
+    jtOrder: jt,
 
     customerName,
     phone: normalizePhone(phone),
-    city: cityFrom(order, delivery, ar),
-    address: addressFrom(order, delivery, ar),
+    city,
+    address: bostaAddress(delivery) ?? jtAddress(jt) ?? shopifyAddress(order, ar),
     initials: initialsOf(order.customer?.displayName ?? customerName),
 
-    cod: delivery?.cod ?? num(order.currentTotalPriceSet?.shopMoney?.amount),
+    cod: courierCod ?? shopifyCod,
     subtotal: num(order.currentSubtotalPriceSet?.shopMoney?.amount),
     shipping: num(order.totalShippingPriceSet?.shopMoney?.amount),
     currency: order.currentTotalPriceSet?.shopMoney?.currencyCode ?? 'EGP',
@@ -205,15 +441,25 @@ export function buildOrder(
     clarity: delivery?.dropOffAddress?.addressClarityScore ?? null,
     badAddress: delivery?.dropOffAddress?.isBadAddress ?? false,
 
-    status: statusFrom(order, delivery, phase),
-    stateValue: delivery?.state?.value ?? 'Not shipped',
-    stateCode: delivery?.state?.code ?? null,
-    trackPhase: phase,
-    trackPhaseLabel: PHASES[phase] ?? PHASES[0],
-    courier: courierOf(delivery),
-    attempts: delivery?.attemptsCount ?? delivery?.numberOfAttempts ?? 0,
+    status: statusFrom(order, parcel, t, delivery),
+    stateValue: t.stateValue,
+    stateCode: t.stateCode,
+    trackPhase: t.phase,
+    trackPhaseLabel: PHASES[t.phase] ?? PHASES[0],
+    courier: t.courier,
+    attempts: t.attempts,
     scheduledAt: delivery?.scheduledAt ?? null,
-    phaseTimes: timesFromTimeline(delivery?.timeline),
+    phaseTimes: t.times,
+    problem: t.problem,
+    events: t.events,
+    codMismatch:
+      courierCod !== undefined &&
+      Math.round(courierCod) !== Math.round(shopifyCod) &&
+      !order.cancelledAt &&
+      !t.terminal &&
+      t.phase < 4
+        ? { courier: courierCod, shopify: shopifyCod }
+        : null,
 
     items,
     itemCount: items.reduce((s, i) => s + i.quantity, 0),
@@ -223,11 +469,11 @@ export function buildOrder(
     tags: order.tags,
     note: order.note,
     createdAt: order.createdAt,
-    locked: delivery ? isLockedState(delivery.state?.code) : false,
+    locked: t.locked,
   };
 }
 
-/** Egyptian numbers to E.164, so Shopify/Bosta/WhatsApp all agree. */
+/** Egyptian numbers to E.164, so Shopify, the couriers and WhatsApp all agree. */
 export function normalizePhone(raw: string): string {
   const digits = (raw ?? '').replace(/[^\d+]/g, '');
   if (!digits) return '';

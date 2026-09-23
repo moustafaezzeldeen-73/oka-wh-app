@@ -13,6 +13,8 @@
     "scripts/test-logic.ts",
     "src/api/model.ts",
     "src/api/bostaState.ts",
+    "src/api/jtState.ts",
+    "src/api/md5.ts",
     "src/api/activityLog.ts",
     "src/state/selectors.ts",
     "src/i18n/strings.ts",

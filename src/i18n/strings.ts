@@ -64,14 +64,14 @@ export const AR = {
 
   // ── live-data states ──
   loading: 'جاري التحميل',
-  loadingOrders: 'بنجيب الأوردرات من شوبيفاي وبوسطة',
+  loadingOrders: 'بنجيب الأوردرات من شوبيفاي وبوسطة و J&T',
   refresh: 'تحديث',
   retry: 'حاول تاني',
   noOrders: 'مافيش أوردرات في الفلتر ده',
   errorTitle: 'في مشكلة في الاتصال',
   configMissing: 'الإعدادات ناقصة',
   configMissingHint:
-    'حط مفاتيح شوبيفاي وبوسطة في ملف ‎.env‎ وبعدين اقفل التطبيق وافتحه تاني.',
+    'حط مفاتيح شوبيفاي وبوسطة أو J&T في ملف ‎.env‎ وبعدين اقفل التطبيق وافتحه تاني.',
   syncing: 'بنحفظ في شوبيفاي',
   saved: 'اتحفظ في شوبيفاي',
   saveFailed: 'مانفعش نحفظ، حاول تاني',
@@ -107,6 +107,25 @@ export const AR = {
   yes: 'أيوه',
   no: 'لأ',
   scannedAlready: 'الأوردر ده اتمسح قبل كده',
+  notBooked: 'لسه متسجلش مع شركة شحن',
+  deliveryProblem: 'مشكلة في التوصيل',
+  scanHistory: 'سجل الشحنة',
+  evPickup: 'اتسلمت من المخزن',
+  evDeparted: 'خرجت من {place} إلى {next}',
+  evArrived: 'وصلت {place}',
+  evDelivering: 'خرجت للتوصيل مع {courier}',
+  evDelivered: 'اتسلمت للعميل',
+  evProblem: 'مشكلة',
+  evReturned: 'راجعة للمخزن',
+  otp: 'كود التسليم',
+  branchPhone: 'رقم الفرع',
+  attempts: 'محاولات التوصيل',
+  courierNotice: 'تنبيه شركات الشحن',
+  noScans: 'لسه مفيش حركة على الشحنة',
+  codMismatch: 'مبلغ التحصيل مختلف',
+  codMismatchBody: '{courier} هيحصّل {a} جنيه · شوبيفاي {b} جنيه',
+  syncCod: 'صحّح مبلغ التحصيل عند شركة الشحن',
+  codSynced: 'مبلغ التحصيل اتصحح',
 } as const;
 
 export const EN: Record<keyof typeof AR, string> = {
@@ -168,14 +187,14 @@ export const EN: Record<keyof typeof AR, string> = {
   notAssigned: 'Not assigned yet',
 
   loading: 'Loading',
-  loadingOrders: 'Fetching orders from Shopify and Bosta',
+  loadingOrders: 'Fetching orders from Shopify, Bosta and J&T',
   refresh: 'Refresh',
   retry: 'Try again',
   noOrders: 'No orders match this filter',
   errorTitle: 'Connection problem',
   configMissing: 'Configuration missing',
   configMissingHint:
-    'Add your Shopify and Bosta keys to the .env file, then restart the app.',
+    'Add your Shopify key and your Bosta or J&T keys to the .env file, then restart the app.',
   syncing: 'Saving to Shopify',
   saved: 'Saved to Shopify',
   saveFailed: 'Could not save, try again',
@@ -211,6 +230,25 @@ export const EN: Record<keyof typeof AR, string> = {
   yes: 'Yes',
   no: 'No',
   scannedAlready: 'That order is already scanned',
+  notBooked: 'Not booked with a courier yet',
+  deliveryProblem: 'Delivery problem',
+  scanHistory: 'Scan history',
+  evPickup: 'Picked up from the warehouse',
+  evDeparted: 'Left {place} for {next}',
+  evArrived: 'Arrived at {place}',
+  evDelivering: 'Out for delivery with {courier}',
+  evDelivered: 'Delivered to the customer',
+  evProblem: 'Problem',
+  evReturned: 'Returning to OKA',
+  otp: 'Delivery code',
+  branchPhone: 'Branch phone',
+  attempts: 'Delivery attempts',
+  courierNotice: 'Courier connection',
+  noScans: 'No scans on this parcel yet',
+  codMismatch: 'COD mismatch',
+  codMismatchBody: '{courier} collects {a} EGP · Shopify says {b} EGP',
+  syncCod: 'Set courier COD to the Shopify amount',
+  codSynced: 'Courier COD corrected',
 };
 
 export type Strings = typeof AR;
@@ -239,12 +277,14 @@ export const FILTER_KEYS = [
   'notanswered',
   'answered',
   'readypickup',
+  'bosta',
+  'jt',
 ] as const;
 
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
 export const FILTER_LABELS: Record<Lang, string[]> = {
-  ar: ['الكل', 'جاهز', 'عنوان ناقص', 'ملغي', 'لسه متصل', 'مردش', 'رد', 'جاهز للاستلام'],
+  ar: ['الكل', 'جاهز', 'عنوان ناقص', 'ملغي', 'لسه متصل', 'مردش', 'رد', 'جاهز للاستلام', 'بوسطة', 'J&T'],
   en: [
     'All',
     'Ready',
@@ -254,5 +294,7 @@ export const FILTER_LABELS: Record<Lang, string[]> = {
     'Not answered',
     'Answered',
     'Ready for pickup',
+    'Bosta',
+    'J&T',
   ],
 };

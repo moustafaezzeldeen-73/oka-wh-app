@@ -9,7 +9,51 @@
  *   npm run test:logic
  */
 
-import { buildOrder, money, normalizePhone, waNumber } from '../src/api/model';
+import { createHash } from 'node:crypto';
+
+import {
+  bostaParcel,
+  buildOrder,
+  carrierOfTracking,
+  jtParcel,
+  money,
+  normalizePhone,
+  parcelFromShopify,
+  pickParcel,
+  waNumber,
+} from '../src/api/model';
+import {
+  bizDigest,
+  branchPhoneFromScan,
+  buildPickInfo,
+  cancelPayload,
+  courierFromScan,
+  formEncode,
+  jtAttempts,
+  jtCourier,
+  jtEvents,
+  jtIsLocked,
+  jtIsTerminal,
+  jtOpenProblem,
+  jtPhase,
+  jtPhaseTimes,
+  jtStateLabel,
+  jtTimeToIso,
+  NO_OPEN_NOTICE,
+  orderNameForTxId,
+  problemFromScan,
+  rewriteRemark,
+  scanPhase,
+  signedRequest,
+  stripJtPhonePrefix,
+  txIdForOrder,
+  updatePayload,
+  type JtOrder,
+  type JtParty,
+  type JtScan,
+  type JtShipment,
+} from '../src/api/jtState';
+import { md5, toBase64, toHex } from '../src/api/md5';
 import {
   courierOf,
   isLockedState,
@@ -215,7 +259,7 @@ section("Bosta timeline (authoritative) — live payload for AWB 6428689600");
 
   // The timeline must override the coarser state-code guess.
   const withTimeline = { ...BOSTA_WITH_COURIER, timeline } as BostaDelivery;
-  const o = buildOrder(SHOPIFY_ORDER, withTimeline, [], false);
+  const o = buildOrder(SHOPIFY_ORDER, bostaParcel(withTimeline), [], false);
   eq('order phase comes from the timeline', o.trackPhase, 2);
   eq('order carries phase timestamps', o.phaseTimes[2], '2026-08-12T18:09:56.897Z');
 }
@@ -259,7 +303,7 @@ eq('WhatsApp form drops the plus', waNumber('+201202324887'), '201202324887');
 
 section('Shopify × Bosta join');
 {
-  const o = buildOrder(SHOPIFY_ORDER, BOSTA_NO_COURIER, [], false);
+  const o = buildOrder(SHOPIFY_ORDER, bostaParcel(BOSTA_NO_COURIER), [], false);
   eq('AWB from Bosta', o.awb, '7433950202');
   eq('order name from Shopify', o.name, '#2623621');
   eq('COD prefers Bosta', o.cod, 674);
@@ -278,12 +322,12 @@ section('Shopify × Bosta join');
   );
   eq('initials from customer', o.initials, 'AA');
 
-  const ar = buildOrder(SHOPIFY_ORDER, BOSTA_NO_COURIER, [], true);
+  const ar = buildOrder(SHOPIFY_ORDER, bostaParcel(BOSTA_NO_COURIER), [], true);
   eq('city (AR) from Bosta', ar.city, 'الدقهليه');
 }
 
 {
-  const o = buildOrder(SHOPIFY_ORDER, BOSTA_WITH_COURIER, [], false);
+  const o = buildOrder(SHOPIFY_ORDER, bostaParcel(BOSTA_WITH_COURIER), [], false);
   eq('locked once picked up', o.locked, true);
   eq('phase 2 → transit chip', o.status, 'transit');
   eq('rank from Bosta receiver', o.rank, 100);
@@ -304,7 +348,7 @@ section('Shopify × Bosta join');
     ...BOSTA_NO_COURIER,
     dropOffAddress: { ...BOSTA_NO_COURIER.dropOffAddress, isBadAddress: true },
   } as BostaDelivery;
-  eq('isBadAddress → badaddr chip', buildOrder(SHOPIFY_ORDER, badAddr, [], false).status, 'badaddr');
+  eq('isBadAddress → badaddr chip', buildOrder(SHOPIFY_ORDER, bostaParcel(badAddr), [], false).status, 'badaddr');
 
   const lowClarity = {
     ...BOSTA_NO_COURIER,
@@ -312,14 +356,14 @@ section('Shopify × Bosta join');
   } as BostaDelivery;
   eq(
     'clarity under 40 → badaddr chip',
-    buildOrder(SHOPIFY_ORDER, lowClarity, [], false).status,
+    buildOrder(SHOPIFY_ORDER, bostaParcel(lowClarity), [], false).status,
     'badaddr',
   );
 
   const cancelled = { ...SHOPIFY_ORDER, cancelledAt: '2026-08-12T22:00:00Z' } as ShopifyOrder;
   eq(
     'Shopify cancellation wins',
-    buildOrder(cancelled, BOSTA_WITH_COURIER, [], false).status,
+    buildOrder(cancelled, bostaParcel(BOSTA_WITH_COURIER), [], false).status,
     'cancelled',
   );
 
@@ -329,7 +373,7 @@ section('Shopify × Bosta join');
   } as BostaDelivery;
   eq(
     'Bosta termination → cancelled chip',
-    buildOrder(SHOPIFY_ORDER, terminated, [], false).status,
+    buildOrder(SHOPIFY_ORDER, bostaParcel(terminated), [], false).status,
     'cancelled',
   );
 }
@@ -400,7 +444,7 @@ section('Activity metafield round-trip');
 
 section('List filters and derived call status');
 {
-  const base = buildOrder(SHOPIFY_ORDER, BOSTA_NO_COURIER, [], false);
+  const base = buildOrder(SHOPIFY_ORDER, bostaParcel(BOSTA_NO_COURIER), [], false);
   const answered = {
     ...base,
     shopifyId: 'o-answered',
@@ -653,6 +697,453 @@ section('Gemini transcription');
   } catch (err) {
     check('an empty reply says why', String(err).includes('MAX_TOKENS'));
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// J&T Express — shapes captured live on 2026-09-23 via /api/logistics/trace
+// and /api/order/getOrders. Structure, codes, hubs and wording are verbatim;
+// customer and courier names, phones and addresses are replaced, and photo
+// links (signed, and showing customers' signatures) are placeholders.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PIC = 'https://pro-jmseg-file.jtjms-eg.com/example/photo.jpeg';
+
+const JT_PICKUP_SCAN: JtScan = {
+  scanTime: '2026-09-21 15:26:58',
+  desc: "【المنتزه】【AL-Mandara BR】J&T courier Karim  Nabil Fawzy(01200000010)picked up the shipment. If there is any problem or complaint, please dial branch‘s phone number：000000000|Hassan,035953559|LandLine",
+  scanType: 'Pickup scan',
+  scanNetworkName: 'AL-Mandara BR',
+  scanNetworkProvince: 'الإسكندرية',
+  scanNetworkCity: 'المنتزه',
+  problemReason: '快件揽收',
+  scanTypeCode: 10,
+};
+const JT_HUB_SCANS: JtScan[] = [
+  {
+    scanTime: '2026-09-22 00:07:16',
+    desc: '【مدينة العاشر من رمضان】Shipment departed from【10thRamadanCityHub】to【BE-Kafr Al-Sheikh DC】',
+    scanType: 'Sending scan',
+    scanNetworkName: '10thRamadanCityHub',
+    scanNetworkCity: 'مدينة العاشر من رمضان',
+    nextStopName: 'BE-Kafr Al-Sheikh DC',
+    problemReason: '发件扫描',
+    scanTypeCode: 50,
+  },
+  {
+    scanTime: '2026-09-21 23:50:22',
+    desc: '【مدينة العاشر من رمضان】Shipment arrived at【10thRamadanCityHub】',
+    scanType: 'Arrival Scan',
+    scanNetworkName: '10thRamadanCityHub',
+    scanNetworkCity: 'مدينة العاشر من رمضان',
+    nextStopName: 'AL-ABIS DC',
+    problemReason: '中心到件',
+    scanTypeCode: 92,
+  },
+  {
+    scanTime: '2026-09-21 18:21:32',
+    desc: '【محرم بيك】Shipment departed from【AL-ABIS DC】to【10thRamadanCityHub】',
+    scanType: 'Sending scan',
+    scanNetworkName: 'AL-ABIS DC',
+    nextStopName: '10thRamadanCityHub',
+    problemReason: '发件扫描',
+    scanTypeCode: 50,
+  },
+];
+
+/** Shape of JEG000541604917: picked up, hubbed, out for delivery, signed. */
+const JT_DELIVERED: JtShipment = {
+  billCode: 'JEG000541604917',
+  order: null,
+  dispatches: 1,
+  scans: [
+    {
+      scanTime: '2026-09-22 13:42:44',
+      desc: '【كفر الشيخ】【BE-Kafr Al-Sheikh DC】J&T courier Ahmed Samir Hassan(01000000020) completed the delivery.Received by【Signed on receiver】， If there is any problem or complaint, please dial branch‘s phone number：01000000099|Ahmed',
+      scanType: 'Signing scan',
+      scanNetworkName: 'BE-Kafr Al-Sheikh DC',
+      scanNetworkCity: 'كفر الشيخ',
+      problemReason: '快件签收',
+      sigPicUrl: `${PIC}?sig=1`,
+      electronicSignaturePicUrl: `${PIC}?sig=2`,
+      otp: '1791',
+      scanTypeCode: 100,
+    },
+    {
+      scanTime: '2026-09-22 08:35:43',
+      desc: '【كفر الشيخ】【BE-Kafr Al-Sheikh DC】J&T courier Ahmed Samir Hassan(01000000020)is delivering the shipment. If there is any problem or complaint, please dial branch‘s phone number：01000000099|Ahmed',
+      scanType: 'Delivery scan',
+      scanNetworkName: 'BE-Kafr Al-Sheikh DC',
+      scanNetworkCity: 'كفر الشيخ',
+      problemReason: '派件扫描',
+      scanTypeCode: 94,
+    },
+    ...JT_HUB_SCANS,
+    JT_PICKUP_SCAN,
+  ],
+};
+
+const JT_PROBLEM_SCAN: JtScan = {
+  scanTime: '2026-09-23 14:31:54',
+  desc: '【قنا】Fail to Receive，In case of doubt, please contact the J&T courier:01000000030/01000000031',
+  scanType: 'Abnormal parcels scan',
+  scanNetworkName: 'AS-Qena DC',
+  scanNetworkCity: 'قنا',
+  problemType: '1004',
+  problemReason: '问题件扫描',
+  probleDescription: 'Abnormal parcelScan,1004,The goods do not match after opening,العميل لغي الطلب',
+  problemPicUrl: `${PIC}?p=1`,
+  scanTypeCode: 110,
+};
+const JT_DELIVERING_QENA: JtScan = {
+  scanTime: '2026-09-23 09:44:22',
+  desc: '【قنا】【AS-Qena DC】J&T courier Omar Adel Fekry(01000000030)is delivering the shipment. If there is any problem or complaint, please dial branch‘s phone number：01000000031',
+  scanType: 'Delivery scan',
+  scanNetworkName: 'AS-Qena DC',
+  scanNetworkCity: 'قنا',
+  problemReason: '派件扫描',
+  scanTypeCode: 94,
+};
+
+/** Shape of JEG000543585925: out for delivery, then a failed attempt. */
+const JT_FAILED: JtShipment = {
+  billCode: 'JEG000543585925',
+  order: null,
+  dispatches: 1,
+  scans: [JT_PROBLEM_SCAN, JT_DELIVERING_QENA, ...JT_HUB_SCANS, JT_PICKUP_SCAN],
+};
+
+/** Shape of JEG000542940676: a packaging problem, then sent out anyway. */
+const JT_PROBLEM_THEN_OUT: JtShipment = {
+  billCode: 'JEG000542940676',
+  order: null,
+  dispatches: 1,
+  scans: [
+    { ...JT_DELIVERING_QENA, scanTime: '2026-09-23 05:11:07' },
+    {
+      ...JT_PROBLEM_SCAN,
+      scanTime: '2026-09-23 02:29:06',
+      problemType: '407',
+      probleDescription: 'Abnormal parcelScan,407,Packaging is not standardized,non standar',
+      problemPicUrl: `${PIC}?a=1,${PIC}?a=2`,
+    },
+    ...JT_HUB_SCANS,
+    JT_PICKUP_SCAN,
+  ],
+};
+
+/** getOrders shape for JEG000534521595 — booked, not yet collected. */
+const JT_ORDER: JtOrder = {
+  customerId: 'J0086011104',
+  txlogisticId: 'SHOPIFY2779521',
+  billCode: 'JEG000534521595',
+  expressType: 'EZ',
+  orderType: '2',
+  serviceType: '01',
+  deliveryType: '04',
+  sender: {
+    name: 'OKA Egypt',
+    mobile: '+20-01025843317',
+    prov: 'Alexandria',
+    city: 'Montaza 2',
+    area: 'Montaza 2',
+    street: 'Sidi Beshr Bahri, 11',
+  },
+  receiver: {
+    name: 'محمد علي حسن',
+    mobile: '+20-01000000040',
+    prov: 'Qalyubia',
+    city: 'شبين القناطر',
+    area: 'شبين القناطر',
+    street: 'شارع المدرسة شبين القناطر قليوبيه',
+  },
+  createOrderTime: '2026-09-23T08:36:02',
+  updateOrderTime: '2026-09-23T08:36:13',
+  payType: 'PP_PM',
+  goodsType: 'ITN6',
+  weight: 0.3,
+  totalQuantity: 1,
+  itemsValue: 259,
+  priceCurrency: 'EGP',
+  remark: 'OKA order #2779521; COD 259 EGP',
+  sortingCode: '20  C05-03  017',
+  orderStatus: 101,
+  lastCenterName: '10thRamadanCityHub',
+};
+
+const JT_BOOKED: JtShipment = { billCode: 'JEG000534521595', order: JT_ORDER, scans: [], dispatches: null };
+
+section('J&T request signing (matches the J&T connector byte for byte)');
+{
+  const md5b64 = (s: string) => createHash('md5').update(s, 'utf8').digest('base64');
+  const md5hex = (s: string) => createHash('md5').update(s, 'utf8').digest('hex');
+  for (const s of ['', 'abc', 'x'.repeat(55), 'y'.repeat(64), 'مرحبا 🚚 {"a":1}']) {
+    eq(`md5(${JSON.stringify(s.slice(0, 12))}) matches node:crypto`, toHex(md5(s)), md5hex(s));
+  }
+  eq('base64 of a digest matches', toBase64(md5('abc')), md5b64('abc'));
+
+  const creds = {
+    // Made-up values: only the formula is under test.
+    apiAccount: '100000000000000001',
+    privateKey: '0123456789abcdef0123456789abcdef',
+    customerCode: 'J0000000001',
+    customerPassword: 'not-a-real-password',
+  };
+  // The connector's own formula (jt-mcp-server/src/jtClient.ts), in node:crypto.
+  const refBiz = createHash('md5')
+    .update(
+      creds.customerCode +
+        createHash('md5').update(creds.customerPassword + 'jadada236t2').digest('hex').toUpperCase() +
+        creds.privateKey,
+    )
+    .digest('base64');
+  eq('business digest', bizDigest(creds), refBiz);
+
+  const req = signedRequest(creds, { command: 2, serialNumber: ['JEG000534521595'] }, true, 1790000000000);
+  eq(
+    'auth fields lead the bizContent, as the connector sends them',
+    req.json,
+    JSON.stringify({ customerCode: creds.customerCode, digest: refBiz, command: 2, serialNumber: ['JEG000534521595'] }),
+  );
+  eq('header digest', req.headers.digest, md5b64(req.json + creds.privateKey));
+  eq('apiAccount header', req.headers.apiAccount, creds.apiAccount);
+  eq('timestamp header', req.headers.timestamp, '1790000000000');
+  eq('form body equals URLSearchParams', req.body, new URLSearchParams({ bizContent: req.json }).toString());
+  const tricky = JSON.stringify({ street: "35ش القدس! (بجوار) ~'x' * _-. + & = %", note: 'COD 259 EGP' });
+  eq('form encoding of Arabic and punctuation', `bizContent=${formEncode(tricky)}`, new URLSearchParams({ bizContent: tricky }).toString());
+  const trace = signedRequest(creds, { billCodes: 'JEG1,JEG2' }, false, 1);
+  eq('tracking carries no customer fields', trace.json, '{"billCodes":"JEG1,JEG2"}');
+}
+
+section('J&T times are Cairo wall-clock');
+{
+  eq('September (summer time, UTC+3)', jtTimeToIso('2026-09-22 13:42:44'), '2026-09-22T10:42:44.000Z');
+  eq('ISO-style createOrderTime', jtTimeToIso('2026-09-23T08:36:02'), '2026-09-23T05:36:02.000Z');
+  eq('January (UTC+2)', jtTimeToIso('2026-01-15 10:00:00'), '2026-01-15T08:00:00.000Z');
+  eq('garbage → null', jtTimeToIso('yesterday'), null);
+}
+
+section('J&T scans → tracking phase');
+{
+  eq('delivered parcel → phase 4', jtPhase(JT_DELIVERED), 4);
+  eq('failed attempt keeps out-for-delivery', jtPhase(JT_FAILED), 3);
+  eq('pickup only → phase 1', jtPhase({ ...JT_BOOKED, scans: [JT_PICKUP_SCAN] }), 1);
+  eq('hub scans → phase 2', jtPhase({ ...JT_BOOKED, scans: [...JT_HUB_SCANS, JT_PICKUP_SCAN] }), 2);
+  eq('booked, no scans → phase 0', jtPhase(JT_BOOKED), 0);
+  eq(
+    'order status "picked up" without scans → phase 1',
+    jtPhase({ ...JT_BOOKED, order: { ...JT_ORDER, orderStatus: 103 } }),
+    1,
+  );
+
+  const times = jtPhaseTimes({ ...JT_DELIVERED, order: JT_ORDER });
+  eq('created time from the order record', times[0], '2026-09-23T05:36:02.000Z');
+  eq('picked-up time is the pickup scan', times[1], '2026-09-21T12:26:58.000Z');
+  eq('in-transit time is the first hub scan', times[2], '2026-09-21T15:21:32.000Z');
+  eq('out-for-delivery time', times[3], '2026-09-22T05:35:43.000Z');
+  eq('delivered time', times[4], '2026-09-22T10:42:44.000Z');
+
+  eq('delivery attempts from numberOfDispatch', jtAttempts(JT_FAILED), 1);
+  eq('attempts counted from scans when J&T omits it', jtAttempts({ ...JT_FAILED, dispatches: null }), 1);
+  eq('state label is the latest scan', jtStateLabel(JT_DELIVERED), 'Signing scan');
+  eq('state label from order status', jtStateLabel(JT_BOOKED), 'Assigned to branch');
+}
+
+section('J&T locks, cancellations and returns');
+{
+  eq('booked, not collected → editable', jtIsLocked(JT_BOOKED), false);
+  eq('any scan → locked', jtIsLocked(JT_FAILED), true);
+  eq('cancelled order → terminal', jtIsTerminal({ ...JT_BOOKED, order: { ...JT_ORDER, orderStatus: 104 } }), true);
+  eq('delivered is not terminal', jtIsTerminal(JT_DELIVERED), false);
+  eq(
+    'a return scan → terminal',
+    jtIsTerminal({ ...JT_FAILED, scans: [{ ...JT_DELIVERING_QENA, scanType: 'Return scan', scanTypeCode: 172 }] }),
+    true,
+  );
+  eq('return scans move no phase', scanPhase({ ...JT_PICKUP_SCAN, problemReason: '退件扫描' }), null);
+}
+
+section('J&T courier, branch and problems from the scan text');
+{
+  eq('delivering courier, not the pickup one', jtCourier(JT_DELIVERED), { name: 'Ahmed Samir Hassan', phone: '01000000020' });
+  eq('double spaces in names collapse', courierFromScan(JT_PICKUP_SCAN)?.name, 'Karim Nabil Fawzy');
+  eq('no delivery scans → no courier', jtCourier({ ...JT_BOOKED, scans: [JT_PICKUP_SCAN] }), null);
+  eq('branch phone', branchPhoneFromScan(JT_DELIVERED.scans[0]), '01000000099');
+  eq('zero placeholder numbers skipped', branchPhoneFromScan(JT_PICKUP_SCAN), '035953559');
+
+  const p = jtOpenProblem(JT_FAILED);
+  eq('open problem reason', p?.reason, 'The goods do not match after opening');
+  eq("courier's note kept", p?.note, 'العميل لغي الطلب');
+  eq('problem code', p?.code, '1004');
+  eq('problem photo', p?.photos, [`${PIC}?p=1`]);
+  eq('problem time', p?.at, '2026-09-23T11:31:54.000Z');
+  eq('a problem followed by a delivery scan is closed', jtOpenProblem(JT_PROBLEM_THEN_OUT), null);
+  eq(
+    'comma-separated problem photos split',
+    problemFromScan(JT_PROBLEM_THEN_OUT.scans[1]).photos,
+    [`${PIC}?a=1`, `${PIC}?a=2`],
+  );
+
+  const ev = jtEvents(JT_DELIVERED);
+  eq('events newest first', ev.map((e) => e.kind), ['delivered', 'delivering', 'departed', 'arrived', 'departed', 'pickup']);
+  eq('proof-of-delivery photos on the signing event', ev[0].photos, [`${PIC}?sig=1`, `${PIC}?sig=2`]);
+  eq('delivery code', ev[0].otp, '1791');
+  eq('next stop on departures', ev[2].next, 'BE-Kafr Al-Sheikh DC');
+  eq('failed attempt event', jtEvents(JT_FAILED)[0].kind, 'problem');
+}
+
+section('Shopify fulfillment → courier');
+{
+  const withTracking = (list: { status: string; createdAt: string; company: string | null; number: string }[]) =>
+    ({
+      ...SHOPIFY_ORDER,
+      fulfillments: list.map((f) => ({
+        status: f.status,
+        createdAt: f.createdAt,
+        trackingInfo: [{ company: f.company, number: f.number, url: null }],
+      })),
+    }) as ShopifyOrder;
+
+  eq(
+    'J&T Express',
+    parcelFromShopify(withTracking([{ status: 'SUCCESS', createdAt: '2026-09-23T06:44:31Z', company: 'J&T Express', number: 'JEG000534521595' }])),
+    { carrier: 'jt', awb: 'JEG000534521595' },
+  );
+  eq(
+    'Bosta',
+    parcelFromShopify(withTracking([{ status: 'SUCCESS', createdAt: '2026-09-17T06:39:09Z', company: 'Bosta', number: '3948181995' }])),
+    { carrier: 'bosta', awb: '3948181995' },
+  );
+  eq(
+    'cancelled fulfillment ignored, newest live one wins',
+    parcelFromShopify(
+      withTracking([
+        { status: 'SUCCESS', createdAt: '2026-09-17T06:39:09Z', company: 'Bosta', number: '3948181995' },
+        { status: 'CANCELLED', createdAt: '2026-09-23T06:00:00Z', company: 'J&T Express', number: 'JEG000000000001' },
+        { status: 'SUCCESS', createdAt: '2026-09-22T06:00:00Z', company: 'J&T Express', number: 'JEG000534521595' },
+      ]),
+    ),
+    { carrier: 'jt', awb: 'JEG000534521595' },
+  );
+  eq('no fulfillment → none', parcelFromShopify(SHOPIFY_ORDER), null);
+  eq('company missing → J&T by AWB shape', carrierOfTracking(null, 'JEG000534521595'), 'jt');
+  eq('company missing → Bosta by AWB shape', carrierOfTracking('', '3948181995'), 'bosta');
+  eq('unknown courier → none', carrierOfTracking('Aramex', 'ABC123'), null);
+}
+
+section('Shopify × J&T join');
+{
+  const shipped = { ...JT_DELIVERED, order: { ...JT_ORDER, billCode: 'JEG000541604917', orderStatus: 103 } };
+  const o = buildOrder(SHOPIFY_ORDER, jtParcel(shipped), [], false);
+  eq('AWB from J&T', o.awb, 'JEG000541604917');
+  eq('carrier key', o.carrier, 'jt');
+  eq('carrier name', o.carrierName, 'J&T Express');
+  eq('COD from J&T itemsValue', o.cod, 259);
+  eq('delivered chip', o.status, 'delivered');
+  eq('locked once J&T has it', o.locked, true);
+  eq('courier from the delivery scan', o.courier?.name, 'Ahmed Samir Hassan');
+  eq('J&T record kept for cancel/update', o.jtOrder?.txlogisticId, 'SHOPIFY2779521');
+  eq('no Bosta scores', [o.rank, o.clarity, o.bostaId], [null, null, null]);
+  eq('scan history carried', o.events.length, JT_DELIVERED.scans.length);
+
+  const booked = buildOrder(SHOPIFY_ORDER, jtParcel(JT_BOOKED), [], true);
+  eq('booked → ready chip', booked.status, 'ready');
+  eq('booked → still editable', booked.locked, false);
+  eq('Arabic city from J&T receiver', booked.city, 'شبين القناطر');
+  eq('street from J&T receiver', booked.address, 'شارع المدرسة شبين القناطر قليوبيه');
+
+  const failed = buildOrder(SHOPIFY_ORDER, jtParcel({ ...JT_FAILED, order: JT_ORDER }), [], false);
+  eq('failed attempt → transit chip with a problem', [failed.status, failed.problem?.code], ['transit', '1004']);
+
+  const cancelled = buildOrder(SHOPIFY_ORDER, jtParcel({ ...JT_BOOKED, order: { ...JT_ORDER, orderStatus: 104 } }), [], false);
+  eq('J&T cancellation → cancelled chip', cancelled.status, 'cancelled');
+
+  const unread = buildOrder(SHOPIFY_ORDER, { carrier: 'jt', awb: 'JEG000534521595', shipment: null }, [], false);
+  eq('AWB known from Shopify only → shown, marked booked', [unread.awb, unread.carrierName, unread.stateValue], ['JEG000534521595', 'J&T Express', 'Booked']);
+
+  eq('J&T filter', applyFilter([o, buildOrder(SHOPIFY_ORDER, bostaParcel(BOSTA_NO_COURIER), [], false)], 'jt').length, 1);
+  eq('Bosta filter', applyFilter([o, buildOrder(SHOPIFY_ORDER, bostaParcel(BOSTA_NO_COURIER), [], false)], 'bosta')[0].carrier, 'bosta');
+}
+
+section('Courier COD vs what Shopify says is owed');
+{
+  // Shape of #2779321 on 2026-09-23: J&T itemsValue 411, Shopify balance 496.
+  const owed496 = {
+    ...SHOPIFY_ORDER,
+    totalOutstandingSet: { shopMoney: { amount: '496.0', currencyCode: 'EGP' } },
+  } as ShopifyOrder;
+  const at411 = { ...JT_BOOKED, order: { ...JT_ORDER, itemsValue: 411 } };
+  eq('mismatch raised', buildOrder(owed496, jtParcel(at411), [], false).codMismatch, { courier: 411, shopify: 496 });
+  eq('COD shown is what the courier collects', buildOrder(owed496, jtParcel(at411), [], false).cod, 411);
+  eq(
+    'matching amounts → none',
+    buildOrder(owed496, jtParcel({ ...JT_BOOKED, order: { ...JT_ORDER, itemsValue: 496 } }), [], false).codMismatch,
+    null,
+  );
+  eq(
+    'delivered parcels are left alone',
+    buildOrder(owed496, jtParcel({ ...JT_DELIVERED, order: { ...JT_ORDER, itemsValue: 411 } }), [], false).codMismatch,
+    null,
+  );
+  eq('no parcel → none', buildOrder(owed496, null, [], false).codMismatch, null);
+  eq(
+    'Bosta COD compared too',
+    buildOrder(owed496, bostaParcel(BOSTA_NO_COURIER), [], false).codMismatch,
+    { courier: 674, shopify: 496 },
+  );
+}
+
+section('Choosing between couriers');
+{
+  const liveJt = { ...JT_BOOKED };
+  eq('Shopify hint wins', pickParcel({ hint: { carrier: 'jt', awb: 'JEG000534521595' }, bosta: BOSTA_NO_COURIER, jt: liveJt })?.carrier, 'jt');
+  eq(
+    'hint for another AWB leaves data empty rather than mixing parcels',
+    pickParcel({ hint: { carrier: 'jt', awb: 'JEG999' }, bosta: null, jt: liveJt }),
+    { carrier: 'jt', awb: 'JEG999', shipment: null },
+  );
+  const terminatedBosta = { ...BOSTA_NO_COURIER, state: { value: 'Terminated', code: 49 } } as BostaDelivery;
+  eq('live parcel beats a terminated one', pickParcel({ hint: null, bosta: terminatedBosta, jt: liveJt })?.carrier, 'jt');
+  eq('only Bosta → Bosta', pickParcel({ hint: null, bosta: BOSTA_NO_COURIER, jt: null })?.carrier, 'bosta');
+  eq('nothing → null', pickParcel({ hint: null, bosta: null, jt: null }), null);
+}
+
+section('J&T updates resubmit the whole order');
+{
+  const pick = buildPickInfo(
+    [
+      { name: 'OKA Carbon Black', qty: 1, unitPrice: 189 },
+      { name: 'Tongs', qty: 0, unitPrice: 20 },
+    ],
+    189,
+    70,
+    259,
+  );
+  eq('pickInfo format', pick, `OKA Carbon Black x1 @189 EGP; Subtotal: 189 EGP; Shipping: 70 EGP; COD: 259 EGP; ${NO_OPEN_NOTICE}`);
+  eq('pickInfo capped at 500', buildPickInfo([{ name: 'x'.repeat(600), qty: 1, unitPrice: 1 }], 1, 0, 1).length, 500);
+
+  const payload = updatePayload(JT_ORDER, '#2779521', { cod: 300, street: 'شارع جديد', pickInfo: pick });
+  eq('operateType 2', payload.operateType, 2);
+  eq('same txlogisticId', payload.txlogisticId, 'SHOPIFY2779521');
+  eq('new COD', payload.itemsValue, 300);
+  eq('remark COD rewritten, rest kept', payload.remark, 'OKA order #2779521; COD 300 EGP');
+  eq('pay type echoed back', payload.payType, 'PP_PM');
+  eq('+20- prefix stripped from sender', (payload.sender as JtParty).mobile, '01025843317');
+  eq('+20- prefix stripped from receiver', (payload.receiver as JtParty).mobile, '01000000040');
+  eq('country code filled', (payload.receiver as JtParty).countryCode, 'EGY');
+  eq('street changed', (payload.receiver as JtParty).street, 'شارع جديد');
+  eq('area untouched', (payload.receiver as JtParty).area, 'شبين القناطر');
+  eq('weight and goods type resent', [payload.weight, payload.goodsType, payload.expressType, payload.deliveryType], [0.3, 'ITN6', 'EZ', '04']);
+  eq('read-only fields not sent', ['orderStatus', 'billCode', 'sortingCode'].filter((k) => k in payload), []);
+  eq('remark without a COD gets one', rewriteRemark('Alt phone: 0100', '#1', 50), 'Alt phone: 0100; COD 50 EGP');
+  eq('missing remark rebuilt', rewriteRemark(undefined, '#2779521', 259), 'OKA order #2779521; COD 259 EGP');
+
+  eq('cancel payload uses the order type J&T reported', cancelPayload(JT_ORDER, 'x'.repeat(80)), {
+    txlogisticId: 'SHOPIFY2779521',
+    reason: 'x'.repeat(50),
+    orderType: 2,
+  });
+  eq('reference ↔ order name', [txIdForOrder('#2779521'), orderNameForTxId('SHOPIFY2779521'), orderNameForTxId('OTHER1')], ['SHOPIFY2779521', '#2779521', null]);
+  eq('prefix stripper leaves plain numbers', stripJtPhonePrefix('01025843317'), '01025843317');
 }
 
 tokenTests().then(() => {

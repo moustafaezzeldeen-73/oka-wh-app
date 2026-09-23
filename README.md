@@ -3,17 +3,17 @@
 Warehouse app for OKA Egypt, built with Expo SDK 57 (React Native 0.86) and
 testable in Expo Go on Android and iPhone.
 It is a faithful implementation of the OKA Warehouse design, wired end to end to
-live **Shopify Admin** and **Bosta** data. There is no mock data anywhere in the app.
+live **Shopify Admin**, **J&T Express** and **Bosta** data. There is no mock data anywhere in the app.
 
 ## What it does
 
 | Screen | Purpose |
 | --- | --- |
-| **Orders** | Live open orders, joined to their Bosta shipment. Search by order, AWB, phone or city; eight filters (ready, bad address, cancelled, not called, not answered, answered, ready for pickup). Arabic ⇄ English toggle. |
-| **Scan** | Live camera barcode scanner (Code 128 / 39 / EAN / QR / ITF-14). Resolves an AWB or order name against Bosta then Shopify and opens the order. |
-| **Order detail** | AWB with a barcode derived from the tracking number, tracking phase, customer card, Bosta customer ranking and address-clarity scores, shipping fee, call / WhatsApp / photo / edit actions, contact history, line items with real product images, delivery address, COD breakdown, attached photos. |
-| **Edit order** | Change quantities, add products from the live catalogue, correct the delivery address. Commits a real Shopify order edit and re-syncs Bosta's COD. Locked once Bosta holds the parcel. |
-| **Tracking** | Five-phase timeline with real timestamps from Bosta, plus the assigned courier with call and WhatsApp actions. |
+| **Orders** | Live open orders, each joined to its J&T or Bosta parcel and tagged with the courier. Search by order, AWB, phone, city or courier; filters for ready, bad address, cancelled, not called, not answered, answered, ready for pickup, Bosta and J&T. A courier's reported delivery problem, or a COD that differs from Shopify, shows on the row. Arabic ⇄ English toggle. |
+| **Scan** | Live camera barcode scanner (Code 128 / 39 / EAN / QR / ITF-14). Resolves a J&T AWB (`JEG…`), a Bosta AWB or an order name and opens the order. |
+| **Order detail** | AWB and courier, tracking phase, J&T delivery problems with the courier's note and photos, COD-mismatch warning with a one-tap fix, customer card, Bosta ranking and address-clarity scores, call / WhatsApp / photo / edit actions, contact history, line items with real product images, delivery address, COD breakdown, attached photos. |
+| **Edit order** | Change quantities, add products from the live catalogue, correct the delivery address. Commits a real Shopify order edit, then moves the courier's COD to Shopify's new balance — Bosta by COD update, J&T by resubmitting the order with its item list rebuilt. Locked once the courier holds the parcel. |
+| **Tracking** | Five-phase timeline with real timestamps from the courier, the delivering courier with call and WhatsApp actions, the J&T branch line, and J&T's full scan history with signature / proof-of-delivery photos and delivery codes. |
 | **Modes** | Truck-loading and shipping-status entry points, plus a live shift summary. |
 | **Shipping status** | Phone-number lookup showing the shipment stage and courier. |
 | **Truck loading** | Burst scan with beep and haptics, running count, undo. Each scan is logged onto its Shopify order. |
@@ -21,20 +21,31 @@ live **Shopify Admin** and **Bosta** data. There is no mock data anywhere in the
 | **Photo** | Camera capture, uploaded to Shopify Files and linked from the order log. |
 | **WhatsApp** | Message templates populated from the live order, for the customer or the courier. |
 
-## How the two systems are joined
+## How Shopify and the couriers are joined
 
-Bosta's `businessReference` carries the Shopify order name (`#2623721`), and that
-is the join key. From each side:
+OKA now ships with **J&T Express** and older parcels are still with **Bosta**, so
+every order is matched to whichever courier carries it:
+
+1. **The Shopify fulfillment.** When an order ships, its fulfillment gets a
+   tracking entry — company `J&T Express` with a `JEG…` AWB, or `Bosta` with a
+   numeric one. That entry decides the courier and the AWB.
+2. **Booked but not yet fulfilled.** J&T parcels carry `txlogisticId`
+   `SHOPIFY<order number>`, and Bosta parcels carry `businessReference` = the
+   order name (`#2623721`). Both are looked up, live parcels win over
+   cancelled or returned ones, then the newest.
 
 | Field in the app | Source |
 | --- | --- |
-| Order name, line items, product images, subtotal, shipping | Shopify |
-| AWB, COD, shipment state, courier | Bosta |
-| Customer ranking | Bosta `receiver.ranking` |
-| Address clarity, bad-address flag | Bosta `dropOffAddress.addressClarityScore` / `isBadAddress` |
-| Tracking phases and timestamps | Bosta `timeline` |
+| Order name, line items, product images, subtotal, shipping, balance owed | Shopify |
+| Courier and AWB | Shopify fulfillment tracking |
+| COD, shipment state, courier, attempts | J&T `getOrders` + `logistics/trace` / Bosta delivery |
+| Tracking phases and timestamps | J&T scans / Bosta `timeline` |
+| Delivery problems, proof-of-delivery photos | J&T scans |
+| Customer ranking, address clarity | Bosta only |
 
-Orders with no Bosta shipment yet are shown as **New** rather than hidden.
+Orders on no courier yet show as **New**. A courier without keys, or one that
+fails to answer, is named in a banner above the list; its orders still show the
+AWB from Shopify, just without live status.
 
 ## Logging to the Shopify order
 
@@ -96,8 +107,8 @@ for microphone access.
 
 ```bash
 npm install
-cp .env.example .env      # fill in your Shopify and Bosta keys
-npm run verify            # confirm credentials, scopes and the Shopify↔Bosta join
+cp .env.example .env      # fill in your Shopify, J&T and Bosta keys
+npm run verify            # confirm credentials, scopes and the courier joins
 npx expo start --tunnel   # then scan the QR code with Expo Go (Android or iPhone)
 ```
 
@@ -150,8 +161,16 @@ non-expiring `shpat_` token, and saves it to `.env` as
 secret is no longer bundled. The redirect URL (`https://example.com/callback` by
 default) must be registered on the app version in the Dev Dashboard.
 
-For a wider rollout, set `API_PROXY_URL` to your own backend: both clients then
-tunnel through it (`/shopify`, `/bosta`) and **no credentials are bundled into the
+**J&T** needs four values from the J&T Egypt Open Platform — `JT_API_ACCOUNT`,
+`JT_PRIVATE_KEY`, `JT_CUSTOMER_CODE`, `JT_CUSTOMER_PASSWORD` — the same ones the
+J&T connector (`jt-mcp-server`) runs with. Every request is signed with J&T's
+MD5 digests, computed in plain TypeScript (`src/api/md5.ts`) because React
+Native has no crypto module; the tests check them byte for byte against the
+connector's implementation. **Bosta** needs `BOSTA_API_KEY`. Either courier can
+be left out.
+
+For a wider rollout, set `API_PROXY_URL` to your own backend: every client then
+tunnels through it (`/shopify`, `/bosta`, `/jt`) and **no credentials are bundled into the
 app at all**. Screen code is unchanged either way. With direct access, the client
 secret ships inside the app bundle, so anyone with the build can mint tokens for
 the store until the secret is rotated. That is a reasonable trade for testing
@@ -161,16 +180,18 @@ server-side, which is what the proxy path is for.
 ## Tests
 
 ```bash
-npm test          # typecheck + 158 logic and OAuth tests
+npm test          # typecheck + 270 logic and OAuth tests
 npm run verify    # live API checks against the real accounts
 npm run bundle:android
 ```
 
-`scripts/test-logic.ts` runs against **verbatim payloads captured from the live
-Shopify and Bosta APIs**, so a schema change on either side surfaces as a failing
-test. It covers the join, state and timeline mapping, edit locking, courier
-resolution, Egyptian phone normalisation, note rendering and truncation, metafield
-round-tripping, and every list filter.
+`scripts/test-logic.ts` runs against **payloads captured from the live Shopify,
+J&T and Bosta APIs**, so a schema change on any side surfaces as a failing test
+(J&T fixtures keep the live structure with customer and courier details
+replaced). It covers J&T request signing, the courier joins, state and timeline
+mapping for both couriers, J&T problems and returns, COD mismatches, J&T update
+payloads, edit locking, Egyptian phone normalisation, note rendering and
+truncation, metafield round-tripping, and every list filter.
 
 ## Notes from wiring this up against the live APIs
 
@@ -189,3 +210,16 @@ round-tripping, and every list filter.
   `BUSINESS_*` role.
 - Bosta refuses COD and address edits once the parcel is picked up, so the app
   locks those fields at the same point instead of letting an edit fail silently.
+- J&T stamps scans and orders in **Cairo wall-clock time with no zone**
+  (`2026-09-22 13:42:44`); the app converts them with the Africa/Cairo zone,
+  summer time included.
+- J&T has no edit call: a COD or address change resubmits the entire order with
+  `operateType: 2` and the same `txlogisticId`, and is refused after pickup.
+  J&T echoes phone numbers back as `+20-0102…`; that prefix is stripped before
+  resubmitting.
+- J&T's date-range order query is not enabled for OKA's account, so parcels are
+  always looked up by AWB or by `SHOPIFY<n>` (20 per call, checked live).
+- J&T scan codes on OKA's parcels: 10 pickup, 50 departed, 92 arrived,
+  94 out for delivery, 100 signed, 110 problem. The courier's name and phone
+  come from the scan text; a problem scan carries J&T's reason, the courier's
+  note and photos.

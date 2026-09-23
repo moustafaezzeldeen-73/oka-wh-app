@@ -9,8 +9,8 @@ import { useApp } from '../state/AppState';
 import { C, GUTTER, R } from '../theme/tokens';
 
 /**
- * Live barcode scanner. Reads the AWB (Code 128 on Bosta labels) or a QR, then
- * resolves it against Bosta + Shopify and opens the order.
+ * Live barcode scanner. Reads the AWB (Code 128 on Bosta and J&T labels) or a QR,
+ * then resolves it against the courier + Shopify and opens the order.
  */
 export function ScanScreen() {
   const { L, go, handleScan, select, showToast } = useApp();

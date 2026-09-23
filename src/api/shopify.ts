@@ -95,11 +95,22 @@ export type ShopifyLineItem = {
   id: string;
   title: string;
   quantity: number;
+  /** After order edits; `quantity` keeps what was originally ordered. */
+  currentQuantity?: number;
   sku: string | null;
   variantTitle: string | null;
   variant: { id: string; title: string; price: string; image: { url: string } | null } | null;
   image: { url: string } | null;
   originalUnitPriceSet: ShopifyMoney;
+  /** Net of line, order-level and code discounts — what the customer pays per unit. */
+  discountedUnitPriceAfterAllDiscountsSet?: ShopifyMoney;
+};
+
+export type ShopifyFulfillment = {
+  status: string;
+  createdAt: string;
+  /** Where OKA records which courier took the parcel, e.g. "J&T Express" / "Bosta". */
+  trackingInfo: { company: string | null; number: string | null; url: string | null }[];
 };
 
 export type ShopifyOrder = {
@@ -114,6 +125,9 @@ export type ShopifyOrder = {
   currentSubtotalPriceSet: ShopifyMoney;
   totalShippingPriceSet: ShopifyMoney;
   currentTotalPriceSet: ShopifyMoney;
+  /** What the customer still owes — the cash a courier should collect. */
+  totalOutstandingSet?: ShopifyMoney;
+  fulfillments?: ShopifyFulfillment[];
   customer: { id: string; displayName: string; phone: string | null } | null;
   shippingAddress: {
     name: string | null;
@@ -140,6 +154,8 @@ const ORDER_FIELDS = `
   currentSubtotalPriceSet { shopMoney { amount currencyCode } }
   totalShippingPriceSet { shopMoney { amount currencyCode } }
   currentTotalPriceSet { shopMoney { amount currencyCode } }
+  totalOutstandingSet { shopMoney { amount currencyCode } }
+  fulfillments(first: 5) { status createdAt trackingInfo(first: 3) { company number url } }
   customer { id displayName phone }
   shippingAddress { name phone address1 address2 city province country }
   lineItems(first: 50) {
@@ -147,11 +163,13 @@ const ORDER_FIELDS = `
       id
       title
       quantity
+      currentQuantity
       sku
       variantTitle
       variant { id title price image { url } }
       image { url }
       originalUnitPriceSet { shopMoney { amount } }
+      discountedUnitPriceAfterAllDiscountsSet { shopMoney { amount } }
     }
   }
   metafield(namespace: "oka", key: "activity_log") { id value }

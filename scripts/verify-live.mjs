@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Live end-to-end check against the real Shopify and Bosta accounts.
+ * Live end-to-end check against the real Shopify, Bosta and J&T accounts.
  *
  * Reads .env, then exercises every API path the app depends on — reads first,
  * and the write paths only when you pass --write. Run it once after filling in
@@ -11,6 +11,7 @@
  *   npm run verify -- --write # also writes a log entry to one real order
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 const WRITE = process.argv.includes('--write');
@@ -35,6 +36,14 @@ let TOKEN = STATIC_TOKEN;
 const VERSION = env.SHOPIFY_API_VERSION || '2026-07';
 const BOSTA_KEY = env.BOSTA_API_KEY;
 const BOSTA_URL = (env.BOSTA_BASE_URL || 'https://app.bosta.co/api/v2').replace(/\/$/, '');
+const JT = {
+  baseUrl: (env.JT_API_BASE_URL || 'https://openapi.jtjms-eg.com/webopenplatformapi').replace(/\/$/, ''),
+  apiAccount: env.JT_API_ACCOUNT,
+  privateKey: env.JT_PRIVATE_KEY,
+  customerCode: env.JT_CUSTOMER_CODE,
+  customerPassword: env.JT_CUSTOMER_PASSWORD,
+};
+const JT_READY = !!(JT.apiAccount && JT.privateKey && JT.customerCode && JT.customerPassword);
 const GEMINI_KEY = env.GEMINI_API_KEY;
 const GEMINI_MODEL = env.GEMINI_AUDIO_MODEL || 'gemini-2.5-flash';
 
@@ -74,6 +83,43 @@ async function bosta(method, path, payload) {
   return json.data ?? json;
 }
 
+/** Same signing as src/api/jtState.ts and the J&T connector. */
+async function jt(path, bizContent, withAuth) {
+  const b64md5 = (s) => createHash('md5').update(s, 'utf8').digest('base64');
+  const hashedPassword = createHash('md5').update(JT.customerPassword + 'jadada236t2').digest('hex').toUpperCase();
+  const body = withAuth
+    ? { customerCode: JT.customerCode, digest: b64md5(JT.customerCode + hashedPassword + JT.privateKey), ...bizContent }
+    : bizContent;
+  const json = JSON.stringify(body);
+  const res = await fetch(`${JT.baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      apiAccount: JT.apiAccount,
+      digest: b64md5(json + JT.privateKey),
+      timestamp: String(Date.now()),
+    },
+    body: new URLSearchParams({ bizContent: json }).toString(),
+  });
+  const out = await res.json().catch(() => null);
+  if (!res.ok || !out) throw new Error(`HTTP ${res.status}`);
+  if (out.code !== '1') throw new Error(`J&T ${out.code}: ${out.msg}`);
+  return out.data;
+}
+
+/** Courier and AWB from the Shopify fulfillment, as the app reads them. */
+function trackingOf(order) {
+  for (const f of order.fulfillments ?? []) {
+    if (/cancel|error|fail/i.test(f.status ?? '')) continue;
+    for (const t of f.trackingInfo ?? []) {
+      const c = (t.company ?? '').toLowerCase();
+      if (/j\s*&\s*t/.test(c) || /^JEG\d+$/i.test(t.number ?? '')) return { carrier: 'jt', awb: t.number };
+      if (c.includes('bosta') || /^\d{6,12}$/.test(t.number ?? '')) return { carrier: 'bosta', awb: t.number };
+    }
+  }
+  return null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 section('Configuration');
@@ -85,7 +131,15 @@ if (STATIC_TOKEN) {
 } else {
   fail('Shopify credentials missing', 'Set SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET from the Dev Dashboard.');
 }
-BOSTA_KEY ? ok('BOSTA_API_KEY set') : fail('BOSTA_API_KEY missing', 'Bosta checks will be skipped.');
+BOSTA_KEY
+  ? ok('BOSTA_API_KEY set')
+  : console.log('  \x1b[2m– BOSTA_API_KEY not set — Bosta parcels show without live status\x1b[0m');
+JT_READY
+  ? ok('J&T credentials set', `${JT.apiAccount} · ${JT.customerCode} · ${JT.baseUrl}`)
+  : console.log(
+      '  \x1b[2m– J&T not set (JT_API_ACCOUNT, JT_PRIVATE_KEY, JT_CUSTOMER_CODE, JT_CUSTOMER_PASSWORD) — J&T parcels show without live status\x1b[0m',
+    );
+if (!BOSTA_KEY && !JT_READY) fail('no courier configured', 'Set BOSTA_API_KEY and/or the four JT_* values.');
 if (!SHOP || (!(CLIENT_ID && CLIENT_SECRET) && !STATIC_TOKEN)) {
   console.log('\nFill in the Shopify values in .env before re-running.\n');
   process.exit(1);
@@ -149,6 +203,7 @@ try {
          id name createdAt tags
          currentTotalPriceSet { shopMoney { amount } }
          shippingAddress { name phone city }
+         fulfillments(first: 5) { status createdAt trackingInfo(first: 3) { company number } }
          lineItems(first: 5) { nodes { title quantity image { url } } }
          metafield(namespace: "oka", key: "activity_log") { value }
        }
@@ -206,6 +261,33 @@ if (deliveries.length) {
   }
 }
 
+section('J&T Express API');
+const jtShipped = orders.map((o) => ({ o, t: trackingOf(o) })).filter((x) => x.t?.carrier === 'jt');
+if (!JT_READY) {
+  console.log('  \x1b[2mskipped — J&T credentials not set\x1b[0m');
+} else {
+  const sample = jtShipped.slice(0, 10).map((x) => x.t.awb);
+  try {
+    const found = await jt('/api/order/getOrders', { command: 1, serialNumber: orders.slice(0, 20).map((o) => `SHOPIFY${o.name.replace(/^#/, '')}`) }, true);
+    ok('authenticated (order query)', `${found.length} of ${Math.min(orders.length, 20)} recent orders booked with J&T under SHOPIFY<n>`);
+  } catch (e) {
+    fail('J&T order query failed — check JT_API_ACCOUNT, JT_PRIVATE_KEY, JT_CUSTOMER_CODE and JT_CUSTOMER_PASSWORD', e.message);
+  }
+  if (sample.length === 0) {
+    console.log('  \x1b[2m– no open order has a J&T tracking number on its fulfillment yet\x1b[0m');
+  } else {
+    try {
+      const traces = await jt('/api/logistics/trace', { billCodes: sample.join(',') }, false);
+      const scanned = traces.filter((t) => (t.details ?? []).length > 0);
+      ok('tracking read', `${scanned.length}/${sample.length} AWBs have scans`);
+      const t = scanned[0];
+      if (t) ok('sample', `${t.billCode} · ${t.details[0].scanType} · ${t.details[0].scanTime} (Cairo)`);
+    } catch (e) {
+      fail('J&T tracking failed', e.message);
+    }
+  }
+}
+
 section('Gemini (call transcription)');
 if (!GEMINI_KEY) {
   console.log('  \x1b[2mskipped — GEMINI_API_KEY not set; recordings will upload without transcripts\x1b[0m');
@@ -225,9 +307,17 @@ if (!GEMINI_KEY) {
   }
 }
 
-section('Shopify ↔ Bosta join');
+section('Shopify ↔ couriers');
+{
+  const tally = { jt: 0, bosta: 0 };
+  for (const o of orders) {
+    const t = trackingOf(o);
+    if (t) tally[t.carrier]++;
+  }
+  ok('couriers on Shopify fulfillments', `J&T ${tally.jt} · Bosta ${tally.bosta} · not fulfilled ${orders.length - tally.jt - tally.bosta}`);
+}
 if (!BOSTA_KEY) {
-  console.log('  \x1b[2mskipped — needs BOSTA_API_KEY\x1b[0m');
+  console.log('  \x1b[2mBosta businessReference join skipped — needs BOSTA_API_KEY\x1b[0m');
 } else {
   const byRef = new Map();
   for (const d of deliveries) {
@@ -238,9 +328,8 @@ if (!BOSTA_KEY) {
   if (orders.length === 0) {
     fail('no open orders to join against');
   } else if (matched.length === 0) {
-    fail(
-      'no open order matched a Bosta shipment',
-      'Bosta businessReference must equal the Shopify order name (e.g. "#2623721").',
+    console.log(
+      '  \x1b[2m– no open order is on a recent Bosta shipment (expected once J&T carries new orders)\x1b[0m',
     );
   } else {
     ok(

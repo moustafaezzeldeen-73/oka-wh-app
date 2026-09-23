@@ -8,7 +8,7 @@ import { C, F, GUTTER, R } from '../theme/tokens';
 
 /**
  * Quantity and address edits. Committing runs a real Shopify order edit
- * (which Shopify records on the order timeline) and re-syncs Bosta's COD.
+ * (which Shopify records on the order timeline) and re-syncs the courier's COD.
  */
 export function EditOrderScreen({ order }: { order: Order }) {
   const { L, ar, go, draft, setQty, addProduct, setDraftAddress, draftTotals, saveEdit, catalog, busy, showToast } =
