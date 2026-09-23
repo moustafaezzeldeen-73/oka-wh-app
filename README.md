@@ -101,10 +101,23 @@ npm run verify            # confirm credentials, scopes and the Shopify↔Bosta 
 npx expo start --tunnel   # then scan the QR code with Expo Go (Android or iPhone)
 ```
 
-In a GitHub Codespace use `npm run start:codespace` instead. It is the same
-tunnel start with `EXPO_UNSTABLE_HEADLESS=1`, which stops React Native from
-preparing its desktop DevTools window. A Codespace has no screen for that
-window, so without the flag Metro prints a harmless
+In a GitHub Codespace use `npm run start:codespace` instead. It skips Expo's
+ngrok tunnel, which can stall before any QR code appears, and serves Metro
+through the Codespace's own forwarded address for port 8081:
+
+1. It starts Metro with every Expo URL pointing at
+   `https://<codespace>-8081.app.github.dev`.
+2. It makes port 8081 public, because Expo Go can't sign in to GitHub. If that
+   fails, it asks you to do it in the **Ports** tab: right-click 8081 →
+   **Port Visibility** → **Public**.
+3. Once the address answers from outside, it prints a QR code for
+   `exps://<codespace>-8081.app.github.dev`. Scan it with the phone camera.
+   Ignore the `exp://…:443` address Expo prints itself.
+
+`npm run start:codespace -- --tunnel` uses the ngrok tunnel instead. Either way
+it sets `EXPO_UNSTABLE_HEADLESS=1`, which stops React Native from preparing
+its desktop DevTools window. That window needs GUI libraries a Codespace
+doesn't have, and without the flag Metro prints a harmless
 `libatk-1.0.so.0: cannot open shared object file` error.
 
 `npm run verify -- --write` additionally writes one log entry to a real order so
