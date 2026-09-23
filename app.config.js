@@ -13,7 +13,6 @@ module.exports = ({ config }) => ({
   orientation: 'portrait',
   scheme: 'okawh',
   userInterfaceStyle: 'light',
-  newArchEnabled: true,
   assetBundlePatterns: ['**/*'],
   android: {
     package: 'com.okaegypt.warehouse',
@@ -41,7 +40,6 @@ module.exports = ({ config }) => ({
         'OKA Warehouse uses the camera to scan AWB barcodes and photograph order contents.',
       NSMicrophoneUsageDescription:
         'OKA Warehouse records customer calls so they can be attached to the order.',
-      UIBackgroundModes: ['audio'],
     },
   },
   plugins: [
@@ -60,6 +58,11 @@ module.exports = ({ config }) => ({
       {
         microphonePermission:
           'OKA Warehouse records customer calls so they can be attached to the order.',
+        // Registers the microphone foreground service (Android) and the audio
+        // background mode (iOS) that recording needs once the dialer is open.
+        enableBackgroundRecording: true,
+        // The app only plays a scan beep; no background playback service.
+        enableBackgroundPlayback: false,
       },
     ],
   ],

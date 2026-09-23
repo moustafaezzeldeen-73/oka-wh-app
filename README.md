@@ -1,6 +1,7 @@
 # OKA Warehouse
 
-Android warehouse app for OKA Egypt, built with Expo SDK 54 and testable in Expo Go.
+Warehouse app for OKA Egypt, built with Expo SDK 57 (React Native 0.86) and
+testable in Expo Go on Android and iPhone.
 It is a faithful implementation of the OKA Warehouse design, wired end to end to
 live **Shopify Admin** and **Bosta** data. There is no mock data anywhere in the app.
 
@@ -60,20 +61,23 @@ the three ways that *are* public and merchant-visible:
 Line-item edits additionally go through `orderEditBegin` → `orderEditCommit`,
 which Shopify itself records on the timeline as a genuine edit event.
 
-## Call recording — what Android actually allows
+## Call recording — what the phone actually allows
 
-Android does not let a third-party app capture the call's downlink audio; that is
-a platform restriction, not something an app can work around. What this app does:
+The app records the microphone from **Start call** to **End call**, then asks for
+the outcome (answered / no answer / wrong number / refused), uploads the audio
+to Shopify Files, and writes the call, its duration and the recording to the
+order log. The recorder keeps running while the dialer is in front
+(`allowsBackgroundRecording`, plus the audio plugin's microphone foreground
+service on Android and audio background mode on iOS).
 
-- requests the microphone, sets the audio session to stay active in the
-  background, and records across the call while the dialer is in the foreground;
-- on speaker, this captures **both** sides — the UI says so rather than implying
-  a full-duplex tap;
-- on **End call** it stops recording, asks for the outcome (answered / no answer /
-  wrong number / refused), uploads the audio to Shopify Files, and writes the call
-  and its recording to the order log.
+Neither platform lets an ordinary app record the phone call itself: Android 10+
+gives an ordinary app silence while a voice call holds the microphone, and on
+iOS the cellular call interrupts the app's audio session. The recording captures
+what is said before the call connects and after it ends, not the conversation.
+Recording the conversation needs the phone's own call recorder or a dedicated
+service such as Salestrail.
 
-If the microphone is denied, the call still goes through and is still logged —
+If the microphone is denied, the call still goes through and is still logged,
 just without audio.
 
 ## Setup
@@ -82,7 +86,7 @@ just without audio.
 npm install
 cp .env.example .env      # fill in your Shopify and Bosta keys
 npm run verify            # confirm credentials, scopes and the Shopify↔Bosta join
-npm start                 # then scan the QR code with Expo Go on Android
+npx expo start --tunnel   # then scan the QR code with Expo Go (Android or iPhone)
 ```
 
 `npm run verify -- --write` additionally writes one log entry to a real order so

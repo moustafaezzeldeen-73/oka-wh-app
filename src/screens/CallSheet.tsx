@@ -20,19 +20,18 @@ import { C, R } from '../theme/tokens';
 /**
  * Call screen with recording.
  *
- * Neither Android nor iOS lets a third-party app tap the call's downlink
- * audio — that is a platform restriction, not an app limitation. What the app
- * can do (and does) is record from the microphone across the call, which
- * captures both sides when the handset is on speaker. The UI says so plainly
- * rather than pretending otherwise, and the resulting file is uploaded to
- * Shopify Files and linked from the order log.
+ * The app records the microphone from "Start call" to "End call", uploads the
+ * file to Shopify Files and links it from the order log, alongside the call's
+ * duration and outcome.
  *
- * iOS is stricter still: once `tel:` backgrounds the app to place the call,
- * recording only keeps running if the app holds a background-audio
- * entitlement. Expo Go's own binary does not, so under Expo Go the recording
- * captures only up to the moment the Phone app takes over — a real build
- * (`eas build`) with the `audio` background mode picks up where Expo Go
- * leaves off.
+ * Neither platform lets an ordinary app record the phone call itself. Android
+ * 10+ hands an ordinary app silence while a voice call holds the microphone,
+ * and on iOS the cellular call interrupts the app's audio session. So the
+ * recording reliably captures what is said before the call connects and after
+ * it ends, not the conversation; recording the conversation needs the phone's
+ * own call recorder or a dedicated service such as Salestrail.
+ * `allowsBackgroundRecording` (plus the plugin's `enableBackgroundRecording`)
+ * keeps the recorder alive while the dialer is in front.
  */
 export function CallSheet({ order }: { order: Order }) {
   const { L, ar, openSheet, contactTarget, logCall, setContactTarget } = useApp();
@@ -73,9 +72,10 @@ export function CallSheet({ order }: { order: Order }) {
       try {
         await setAudioModeAsync({
           allowsRecording: true,
+          // Keeps capture alive once the dialer takes the foreground. This is
+          // the recording flag — `shouldPlayInBackground` only covers playback.
+          allowsBackgroundRecording: true,
           playsInSilentMode: true,
-          // Keeps capture alive once the dialer takes the foreground.
-          shouldPlayInBackground: true,
           interruptionMode: 'doNotMix',
         });
         await recorder.prepareToRecordAsync();
@@ -116,7 +116,7 @@ export function CallSheet({ order }: { order: Order }) {
       }
     }
     try {
-      await setAudioModeAsync({ allowsRecording: false, shouldPlayInBackground: false });
+      await setAudioModeAsync({ allowsRecording: false, allowsBackgroundRecording: false });
     } catch {
       // Restoring the audio mode is best-effort.
     }
