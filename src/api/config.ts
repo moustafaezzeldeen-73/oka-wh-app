@@ -8,6 +8,8 @@ type Extra = {
   shopifyApiVersion?: string;
   bostaApiKey?: string;
   bostaBaseUrl?: string;
+  geminiApiKey?: string;
+  geminiModel?: string;
   apiProxyUrl?: string;
 };
 
@@ -26,6 +28,11 @@ export const CONFIG = {
   bosta: {
     apiKey: (extra.bostaApiKey ?? '').trim(),
     baseUrl: (extra.bostaBaseUrl ?? 'https://app.bosta.co/api/v2').trim().replace(/\/$/, ''),
+  },
+  /** Call transcription. Optional: without a key, recordings upload untranscribed. */
+  gemini: {
+    apiKey: (extra.geminiApiKey ?? '').trim(),
+    model: (extra.geminiModel ?? 'gemini-2.5-flash').trim(),
   },
   /** When set, both clients tunnel through this backend and ship no credentials. */
   proxyUrl: (extra.apiProxyUrl ?? '').trim().replace(/\/$/, ''),

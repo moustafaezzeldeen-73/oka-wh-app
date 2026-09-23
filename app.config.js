@@ -17,29 +17,24 @@ module.exports = ({ config }) => ({
   android: {
     package: 'com.okaegypt.warehouse',
     adaptiveIcon: { backgroundColor: '#0F9D58' },
-    permissions: [
-      'CAMERA',
-      'RECORD_AUDIO',
-      'MODIFY_AUDIO_SETTINGS',
-      'READ_PHONE_STATE',
-      'CALL_PHONE',
-      'INTERNET',
-      'VIBRATE',
-      'FOREGROUND_SERVICE',
-      'FOREGROUND_SERVICE_MICROPHONE',
+    permissions: ['CAMERA', 'INTERNET', 'VIBRATE'],
+    // The media library plugin always asks for these; the app only reads the
+    // phone's own call recordings (READ_MEDIA_AUDIO) and never records audio.
+    blockedPermissions: [
+      'android.permission.RECORD_AUDIO',
+      'android.permission.WRITE_EXTERNAL_STORAGE',
+      'android.permission.READ_MEDIA_IMAGES',
+      'android.permission.READ_MEDIA_VIDEO',
+      'android.permission.READ_MEDIA_VISUAL_USER_SELECTED',
     ],
   },
   ios: {
     // Only matters for a real build (`eas build`) — Expo Go ignores this and
-    // uses its own Info.plist, which already declares camera/mic usage for
-    // the modules it ships (that's why permission prompts still work when
-    // testing under Expo Go with no ios config at all).
+    // uses its own Info.plist.
     bundleIdentifier: 'com.okaegypt.warehouse',
     infoPlist: {
       NSCameraUsageDescription:
         'OKA Warehouse uses the camera to scan AWB barcodes and photograph order contents.',
-      NSMicrophoneUsageDescription:
-        'OKA Warehouse records customer calls so they can be attached to the order.',
     },
   },
   plugins: [
@@ -48,21 +43,27 @@ module.exports = ({ config }) => ({
       {
         cameraPermission:
           'OKA Warehouse uses the camera to scan AWB barcodes and photograph order contents.',
-        microphonePermission:
-          'OKA Warehouse records customer calls so they can be attached to the order.',
-        recordAudioAndroid: true,
+        microphonePermission: false,
+        recordAudioAndroid: false,
       },
     ],
     [
+      // Only the scan beep; nothing is recorded in-app.
       'expo-audio',
       {
-        microphonePermission:
-          'OKA Warehouse records customer calls so they can be attached to the order.',
-        // Registers the microphone foreground service (Android) and the audio
-        // background mode (iOS) that recording needs once the dialer is open.
-        enableBackgroundRecording: true,
-        // The app only plays a scan beep; no background playback service.
+        microphonePermission: false,
+        recordAudioAndroid: false,
+        enableBackgroundRecording: false,
         enableBackgroundPlayback: false,
+      },
+    ],
+    [
+      // Reads the phone's own call recordings after a call (Android build only).
+      'expo-media-library',
+      {
+        granularPermissions: ['audio'],
+        photosPermission: false,
+        savePhotosPermission: false,
       },
     ],
   ],
@@ -78,6 +79,8 @@ module.exports = ({ config }) => ({
     shopifyApiVersion: process.env.SHOPIFY_API_VERSION || '2026-07',
     bostaApiKey: process.env.BOSTA_API_KEY || '',
     bostaBaseUrl: process.env.BOSTA_BASE_URL || 'https://app.bosta.co/api/v2',
+    geminiApiKey: process.env.GEMINI_API_KEY || '',
+    geminiModel: process.env.GEMINI_AUDIO_MODEL || 'gemini-2.5-flash',
     // Optional: route all API traffic through your own backend instead of
     // calling Shopify/Bosta straight from the device. When set, the clients
     // POST to `${apiProxyUrl}/shopify` and `${apiProxyUrl}/bosta` and no

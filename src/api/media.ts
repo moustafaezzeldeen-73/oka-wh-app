@@ -18,7 +18,7 @@ type StagedTarget = {
   parameters: { name: string; value: string }[];
 };
 
-export type UploadKind = 'image' | 'audio';
+export type UploadKind = 'image' | 'audio' | 'text';
 
 async function createStagedTarget(
   filename: string,
@@ -159,13 +159,22 @@ async function waitForUrl(fileId: string, attempts = 12): Promise<string | null>
 export async function uploadToShopify(
   localUri: string,
   kind: UploadKind,
-  opts: { orderName: string; label: string; fileSize?: number },
+  opts: {
+    orderName: string;
+    label: string;
+    fileSize?: number;
+    /** Upload under this name instead of a generated one. */
+    filename?: string;
+    mimeType?: string;
+  },
 ): Promise<string | null> {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const safeOrder = opts.orderName.replace(/[^\w-]/g, '');
-  const ext = kind === 'image' ? 'jpg' : 'm4a';
-  const mimeType = kind === 'image' ? 'image/jpeg' : 'audio/m4a';
-  const filename = `oka-${safeOrder}-${opts.label}-${stamp}.${ext}`;
+  const ext = kind === 'image' ? 'jpg' : kind === 'text' ? 'txt' : 'm4a';
+  const mimeType =
+    opts.mimeType ??
+    (kind === 'image' ? 'image/jpeg' : kind === 'text' ? 'text/plain' : 'audio/mp4');
+  const filename = opts.filename ?? `oka-${safeOrder}-${opts.label}-${stamp}.${ext}`;
 
   const target = await createStagedTarget(filename, mimeType, kind, opts.fileSize);
   await putBytes(target, localUri, filename, mimeType);

@@ -61,24 +61,36 @@ the three ways that *are* public and merchant-visible:
 Line-item edits additionally go through `orderEditBegin` → `orderEditCommit`,
 which Shopify itself records on the timeline as a genuine edit event.
 
-## Call recording — what the phone actually allows
+## Call recordings and transcripts
 
-The app records the microphone from **Start call** to **End call**, then asks for
-the outcome (answered / no answer / wrong number / refused), uploads the audio
-to Shopify Files, and writes the call, its duration and the recording to the
-order log. The recorder keeps running while the dialer is in front
-(`allowsBackgroundRecording`, plus the audio plugin's microphone foreground
-service on Android and audio background mode on iOS).
+An ordinary app can't record a phone call, but most Android phones sold in
+Egypt record every call themselves (Samsung, Xiaomi, and Google's Phone app)
+and save it as an audio file. The app builds on that:
 
-Neither platform lets an ordinary app record the phone call itself: Android 10+
-gives an ordinary app silence while a voice call holds the microphone, and on
-iOS the cellular call interrupts the app's audio session. The recording captures
-what is said before the call connects and after it ends, not the conversation.
-Recording the conversation needs the phone's own call recorder or a dedicated
-service such as Salestrail.
+1. **Start call** opens the dialer; the phone's recorder captures the call.
+2. **End call**, then pick the outcome (answered / no answer / wrong number /
+   refused).
+3. The app finds the phone's recording of that call — the newest audio file
+   created since the call started, preferring one whose filename contains the
+   number — and shows it for confirmation. In a real Android build this is
+   automatic (`READ_MEDIA_AUDIO`, audio only). In Expo Go and on iPhone,
+   **Choose file** opens the system file picker instead, since Expo Go can't be
+   granted media access on Android.
+4. The recording is uploaded to Shopify Files as
+   `oka-<order>-<awb>-<customer|courier>-<YYYYMMDD-HHmm>.<ext>` (the original on
+   the phone is untouched) and, in parallel, transcribed by Gemini
+   (`gemini-2.5-flash` by default) in Egyptian Arabic with speaker labels. The
+   order's product names and the customer's name go in the prompt, so they
+   come back spelled right.
+5. The order log gets the call with its outcome, duration, the one-line Arabic
+   summary and a link to the recording. The full transcript is uploaded as a
+   `.txt` next to the recording and linked, rather than stored in the log,
+   because JSON metafields are capped at 128 KB from API 2026-04 on.
 
-If the microphone is denied, the call still goes through and is still logged,
-just without audio.
+Nothing blocks the call from being logged: a failed upload, a missing Gemini
+key, a format Gemini can't read (AMR, 3GP) or a recording over ~14 MB each
+become a visible line in the order log instead. The app itself no longer asks
+for microphone access.
 
 ## Setup
 
@@ -130,7 +142,7 @@ server-side, which is what the proxy path is for.
 ## Tests
 
 ```bash
-npm test          # typecheck + 122 logic and OAuth tests
+npm test          # typecheck + 158 logic and OAuth tests
 npm run verify    # live API checks against the real accounts
 npm run bundle:android
 ```

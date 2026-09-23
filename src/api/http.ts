@@ -6,7 +6,7 @@
 export class ApiError extends Error {
   readonly status: number;
   readonly body: string;
-  readonly source: 'shopify' | 'bosta' | 'proxy';
+  readonly source: 'shopify' | 'bosta' | 'gemini' | 'proxy';
 
   constructor(source: ApiError['source'], status: number, message: string, body = '') {
     super(message);

@@ -35,6 +35,8 @@ let TOKEN = STATIC_TOKEN;
 const VERSION = env.SHOPIFY_API_VERSION || '2026-07';
 const BOSTA_KEY = env.BOSTA_API_KEY;
 const BOSTA_URL = (env.BOSTA_BASE_URL || 'https://app.bosta.co/api/v2').replace(/\/$/, '');
+const GEMINI_KEY = env.GEMINI_API_KEY;
+const GEMINI_MODEL = env.GEMINI_AUDIO_MODEL || 'gemini-2.5-flash';
 
 let failures = 0;
 function ok(msg, extra = '') {
@@ -201,6 +203,25 @@ if (deliveries.length) {
     }
   } catch (e) {
     fail(`reading AWB ${awb} failed`, e.message);
+  }
+}
+
+section('Gemini (call transcription)');
+if (!GEMINI_KEY) {
+  console.log('  \x1b[2mskipped — GEMINI_API_KEY not set; recordings will upload without transcripts\x1b[0m');
+} else {
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}`, {
+      headers: { 'x-goog-api-key': GEMINI_KEY },
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${body.error?.message ?? JSON.stringify(body).slice(0, 200)}`);
+    const audio = (body.supportedGenerationMethods ?? []).includes('generateContent');
+    audio
+      ? ok('API key valid and model available', `${body.displayName ?? GEMINI_MODEL}`)
+      : fail(`${GEMINI_MODEL} does not support generateContent`, 'Set GEMINI_AUDIO_MODEL to a current Gemini Flash model.');
+  } catch (e) {
+    fail('Gemini check failed — check GEMINI_API_KEY and GEMINI_AUDIO_MODEL', e.message);
   }
 }
 

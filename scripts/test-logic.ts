@@ -28,6 +28,21 @@ import {
 import { applyFilter, callStatus, contactHistory, orderPhotos } from '../src/state/selectors';
 import type { ShopifyOrder } from '../src/api/shopify';
 import { createTokenSource, ShopifyTokenError, type TokenFetcher } from '../src/api/shopifyToken';
+import {
+  audioMimeType,
+  cairoStamp,
+  geminiCanTranscribe,
+  phoneKey,
+  pickRecording,
+  recordingFilename,
+  type RecordingCandidate,
+} from '../src/api/callRecording';
+import {
+  parseTranscription,
+  transcriptionPrompt,
+  transcriptionRequest,
+  TranscriptionError,
+} from '../src/api/geminiTranscript';
 
 let passed = 0;
 let failed = 0;
@@ -532,6 +547,112 @@ async function tokenTests() {
   });
   await flaky.get().catch(() => undefined);
   eq('recovers after a failed exchange', await flaky.get(), 'shpat_ok');
+}
+
+section('Call recording pickup');
+{
+  eq('phone key from E.164', phoneKey('+201127064476'), '127064476');
+  eq('phone key from local 0-prefixed', phoneKey('01127064476'), '127064476');
+  eq('phone key from bare 10 digits', phoneKey('1127064476'), '127064476');
+  eq('too-short number gives no key', phoneKey('12345'), '');
+
+  // 14:30:00 Cairo on 23 Sep 2026 (EEST, UTC+3).
+  const start = Date.UTC(2026, 8, 23, 11, 30, 0);
+  const now = start + 5 * 60_000;
+  const rec = (id: string, filename: string, offsetSec: number, durationMs: number | null = 90_000): RecordingCandidate => ({
+    id,
+    filename,
+    creationTime: start + offsetSec * 1000,
+    duration: durationMs,
+  });
+
+  const samsungThis = rec('a', 'Call recording +201127064476_260923_143012.m4a', 12);
+  const samsungOther = rec('b', 'Call recording 01012345678_260923_143100.m4a', 1);
+  const older = rec('c', 'Call recording Ahmed_260923_101500.m4a', -4 * 3600);
+  eq('number in the filename beats a closer timestamp', pickRecording([samsungOther, samsungThis, older], { phone: '01127064476', startedAt: start, now })?.id, 'a');
+
+  const byName = rec('d', 'Call recording Amr Aly_260923_143005.m4a', 5);
+  eq('contact-named file matched on time alone', pickRecording([byName, older], { phone: '+201127064476', startedAt: start, now })?.id, 'd');
+  eq('recordings from before the call are ignored', pickRecording([older], { phone: '+201127064476', startedAt: start, now }), null);
+  eq('empty recordings are ignored', pickRecording([rec('e', 'x.m4a', 3, 0)], { phone: '', startedAt: start, now }), null);
+  eq('future-dated files are ignored', pickRecording([rec('f', 'x.m4a', 3600)], { phone: '', startedAt: start, now }), null);
+  eq('a slightly early file still counts (clock skew)', pickRecording([rec('g', 'x.m4a', -60)], { phone: '', startedAt: start, now })?.id, 'g');
+
+  eq('m4a → audio/mp4', audioMimeType('call.m4a'), 'audio/mp4');
+  eq('mp3 → audio/mpeg', audioMimeType('call.MP3'), 'audio/mpeg');
+  eq('amr → audio/amr', audioMimeType('call.amr'), 'audio/amr');
+  eq('unknown extension falls back to reported type', audioMimeType('call.xyz', 'audio/x-foo'), 'audio/x-foo');
+  check('Gemini reads m4a and mp3', geminiCanTranscribe('audio/mp4') && geminiCanTranscribe('audio/mpeg'));
+  check('Gemini skips AMR and 3GP', !geminiCanTranscribe('audio/amr') && !geminiCanTranscribe('audio/3gpp'));
+
+  eq('Cairo timestamp', cairoStamp(start), '20260923-1430');
+  eq('Cairo midnight is 00, not 24', cairoStamp(Date.UTC(2026, 8, 22, 21, 5)), '20260923-0005');
+  eq(
+    'upload name carries order, AWB, party and time',
+    recordingFilename({ orderName: '#2623721', awb: '7433950202', target: 'customer', startedAt: start, originalName: 'Call recording +201127064476_260923_143012.m4a' }),
+    'oka-2623721-7433950202-customer-20260923-1430.m4a',
+  );
+  eq(
+    'no AWB yet, original extension kept',
+    recordingFilename({ orderName: '#2623721', awb: null, target: 'courier', startedAt: start, originalName: 'rec.MP3' }),
+    'oka-2623721-courier-20260923-1430.mp3',
+  );
+}
+
+section('Gemini transcription');
+{
+  const ctx = {
+    orderName: '#2623621',
+    target: 'customer' as const,
+    contactName: 'Amr Aly',
+    products: ['OKA Cobra + OKA base', 'Tongs , Foil Combo'],
+  };
+  const prompt = transcriptionPrompt(ctx);
+  check('prompt names the order', prompt.includes('#2623621'));
+  check('prompt lists the products for spelling', prompt.includes('OKA Cobra + OKA base') && prompt.includes('Tongs , Foil Combo'));
+  check('prompt names the customer', prompt.includes('Amr Aly'));
+  check('prompt asks for speaker labels', prompt.includes('"OKA:"') && prompt.includes('"Customer:"'));
+  check('courier calls label the courier', transcriptionPrompt({ ...ctx, target: 'courier' }).includes('"Courier:"'));
+
+  const req = transcriptionRequest('QUJD', 'audio/mp4', ctx) as any;
+  eq('audio sent inline with its type', req.contents[0].parts[0].inlineData, { mimeType: 'audio/mp4', data: 'QUJD' });
+  eq('asks for JSON output', req.generationConfig.responseMimeType, 'application/json');
+  eq('schema requires summary and transcript', req.generationConfig.responseSchema.required, ['summary', 'transcript']);
+
+  const reply = (text: string, extra: object = {}) => ({ candidates: [{ content: { parts: [{ text }] }, ...extra }] });
+  eq(
+    'parses structured output',
+    parseTranscription(reply('{"summary":"أكد الأوردر","transcript":"OKA: ألو\\nCustomer: أيوه"}')),
+    { summary: 'أكد الأوردر', transcript: 'OKA: ألو\nCustomer: أيوه' },
+  );
+  eq('tolerates a fenced reply', parseTranscription(reply('```json\n{"summary":"s","transcript":"t"}\n```')), { summary: 's', transcript: 't' });
+  eq('keeps a prose reply as the transcript', parseTranscription(reply('OKA: ألو')), { summary: '', transcript: 'OKA: ألو' });
+  // Verbatim shape of a live gemini-2.5-flash reply: every turn on one line.
+  eq(
+    'splits speaker turns onto their own lines',
+    parseTranscription(reply('{"summary":"s","transcript":"OKA: الو مساء الخير. Customer: ايوه اهلا خير. OKA: تمام."}')).transcript,
+    'OKA: الو مساء الخير.\nCustomer: ايوه اهلا خير.\nOKA: تمام.',
+  );
+  // Second live shape: turns with no separator at all.
+  eq(
+    'splits turns glued to the previous sentence',
+    parseTranscription(reply('{"summary":"s","transcript":"OKA: معاك OKA بخصوص الاوردر.Customer: ايوه.OKA: تمام."}')).transcript,
+    'OKA: معاك OKA بخصوص الاوردر.\nCustomer: ايوه.\nOKA: تمام.',
+  );
+  eq('courier turns split too', parseTranscription(reply('{"summary":"s","transcript":"OKA: فين؟ Courier: جاي"}')).transcript, 'OKA: فين؟\nCourier: جاي');
+
+  try {
+    parseTranscription({ promptFeedback: { blockReason: 'SAFETY' } });
+    check('a blocked request throws', false);
+  } catch (err) {
+    check('a blocked request throws TranscriptionError', err instanceof TranscriptionError && String(err).includes('SAFETY'));
+  }
+  try {
+    parseTranscription({ candidates: [{ content: { parts: [] }, finishReason: 'MAX_TOKENS' }] });
+    check('an empty reply throws', false);
+  } catch (err) {
+    check('an empty reply says why', String(err).includes('MAX_TOKENS'));
+  }
 }
 
 tokenTests().then(() => {

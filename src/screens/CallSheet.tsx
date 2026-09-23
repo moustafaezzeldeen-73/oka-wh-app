@@ -1,40 +1,41 @@
-import {
-  RecordingPresets,
-  requestRecordingPermissionsAsync,
-  setAudioModeAsync,
-  useAudioRecorder,
-  useAudioRecorderState,
-} from 'expo-audio';
 import * as Linking from 'expo-linking';
 import { useKeepAwake } from 'expo-keep-awake';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, View } from 'react-native';
 
 import { WhatsAppIcon } from '../components/Icons';
 import { Mono, PrimaryButton, Txt } from '../components/primitives';
 import type { CallOutcome } from '../api/activity';
 import { money, type Order } from '../api/model';
+import {
+  canFindAutomatically,
+  chooseRecordingFile,
+  findCallRecording,
+  type RecordingFile,
+} from '../device/callRecordings';
 import { useApp } from '../state/AppState';
 import { C, R } from '../theme/tokens';
 
 /**
- * Call screen with recording.
+ * Call screen.
  *
- * The app records the microphone from "Start call" to "End call", uploads the
- * file to Shopify Files and links it from the order log, alongside the call's
- * duration and outcome.
- *
- * Neither platform lets an ordinary app record the phone call itself. Android
- * 10+ hands an ordinary app silence while a voice call holds the microphone,
- * and on iOS the cellular call interrupts the app's audio session. So the
- * recording reliably captures what is said before the call connects and after
- * it ends, not the conversation; recording the conversation needs the phone's
- * own call recorder or a dedicated service such as Salestrail.
- * `allowsBackgroundRecording` (plus the plugin's `enableBackgroundRecording`)
- * keeps the recorder alive while the dialer is in front.
+ * An ordinary app can't record a phone call, but most Android phones record
+ * every call themselves. So the app places the call, and afterwards picks up
+ * the phone's own recording: found automatically in a real Android build
+ * (matched by time and number), or chosen with the system file picker in Expo
+ * Go and on iPhone. The recording is uploaded to Shopify under a name tied to
+ * the order, transcribed by Gemini, and logged on the order with the outcome.
  */
+
+type Phase = 'idle' | 'live' | 'outcome' | 'recording';
+
+type RecordingState =
+  | { status: 'searching' }
+  | { status: 'ready'; file: RecordingFile }
+  | { status: 'none' | 'denied' | 'manual' };
+
 export function CallSheet({ order }: { order: Order }) {
-  const { L, ar, openSheet, contactTarget, logCall, setContactTarget } = useApp();
+  const { L, openSheet, contactTarget, logCall, setContactTarget } = useApp();
   useKeepAwake();
 
   const isCourier = contactTarget === 'courier' && order.courier !== null;
@@ -48,47 +49,23 @@ export function CallSheet({ order }: { order: Order }) {
       .slice(0, 2)
       .join('') || '—';
 
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const state = useAudioRecorderState(recorder, 500);
-
-  const [phase, setPhase] = useState<'idle' | 'live' | 'outcome'>('idle');
-  const [recordingUri, setRecordingUri] = useState<string | null>(null);
-  const [micDenied, setMicDenied] = useState(false);
+  const [phase, setPhase] = useState<Phase>('idle');
   const [elapsed, setElapsed] = useState(0);
+  const [outcome, setOutcome] = useState<CallOutcome | null>(null);
+  const [recording, setRecording] = useState<RecordingState>({ status: 'manual' });
   const startedAt = useRef<number>(0);
   const ticker = useRef<ReturnType<typeof setInterval> | null>(null);
+  const alive = useRef(true);
 
   useEffect(
     () => () => {
+      alive.current = false;
       if (ticker.current) clearInterval(ticker.current);
     },
     [],
   );
 
-  const startCall = useCallback(async () => {
-    const perm = await requestRecordingPermissionsAsync();
-
-    if (perm.granted) {
-      try {
-        await setAudioModeAsync({
-          allowsRecording: true,
-          // Keeps capture alive once the dialer takes the foreground. This is
-          // the recording flag — `shouldPlayInBackground` only covers playback.
-          allowsBackgroundRecording: true,
-          playsInSilentMode: true,
-          interruptionMode: 'doNotMix',
-        });
-        await recorder.prepareToRecordAsync();
-        recorder.record();
-        setMicDenied(false);
-      } catch {
-        // A failed recorder must not stop the call from being placed.
-        setMicDenied(true);
-      }
-    } else {
-      setMicDenied(true);
-    }
-
+  const startCall = useCallback(() => {
     startedAt.current = Date.now();
     setElapsed(0);
     ticker.current = setInterval(
@@ -96,53 +73,68 @@ export function CallSheet({ order }: { order: Order }) {
       1000,
     );
     setPhase('live');
+    Linking.openURL(`tel:${phone}`).catch(() => undefined);
+  }, [phone]);
 
-    const dial = `tel:${phone}`;
-    Linking.openURL(dial).catch(() => undefined);
-  }, [phone, recorder]);
-
-  const endCall = useCallback(async () => {
+  const endCall = useCallback(() => {
     if (ticker.current) {
       clearInterval(ticker.current);
       ticker.current = null;
     }
-    let uri: string | null = null;
-    if (state.isRecording) {
-      try {
-        await recorder.stop();
-        uri = recorder.uri ?? null;
-      } catch {
-        uri = null;
-      }
-    }
-    try {
-      await setAudioModeAsync({ allowsRecording: false, allowsBackgroundRecording: false });
-    } catch {
-      // Restoring the audio mode is best-effort.
-    }
-    setRecordingUri(uri);
     setPhase('outcome');
-  }, [recorder, state.isRecording]);
+  }, []);
 
-  const finish = useCallback(
-    async (outcome: CallOutcome) => {
+  const lookForRecording = useCallback(async () => {
+    if (!canFindAutomatically) {
+      setRecording({ status: 'manual' });
+      return;
+    }
+    setRecording({ status: 'searching' });
+    try {
+      const res = await findCallRecording({ phone, startedAt: startedAt.current });
+      if (!alive.current) return;
+      if (res.status === 'found') setRecording({ status: 'ready', file: res.file });
+      else if (res.status === 'denied') setRecording({ status: 'denied' });
+      else setRecording({ status: 'none' });
+    } catch {
+      if (alive.current) setRecording({ status: 'none' });
+    }
+  }, [phone]);
+
+  const pickOutcome = useCallback(
+    (o: CallOutcome) => {
+      setOutcome(o);
+      setPhase('recording');
+      void lookForRecording();
+    },
+    [lookForRecording],
+  );
+
+  const chooseFile = useCallback(async () => {
+    const file = await chooseRecordingFile();
+    if (file && alive.current) setRecording({ status: 'ready', file });
+  }, []);
+
+  const save = useCallback(
+    async (file: RecordingFile | null) => {
+      if (!outcome) return;
       openSheet(null);
+      setContactTarget('customer');
       await logCall(order, {
         target: isCourier ? 'courier' : 'customer',
         phone,
-        durationSec: elapsed,
+        contactName: name,
+        startedAt: startedAt.current,
+        timerSec: elapsed,
         outcome,
-        recordingUri,
+        recording: file,
       });
-      setPhase('idle');
-      setRecordingUri(null);
-      setElapsed(0);
-      setContactTarget('customer');
     },
-    [elapsed, isCourier, logCall, openSheet, order, phone, recordingUri, setContactTarget],
+    [elapsed, isCourier, logCall, name, openSheet, order, outcome, phone, setContactTarget],
   );
 
-  const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
+  const mmss = (sec: number) =>
+    `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
 
   return (
     <View
@@ -191,30 +183,18 @@ export function CallSheet({ order }: { order: Order }) {
             paddingVertical: 8,
             paddingHorizontal: 14,
             borderRadius: 12,
-            backgroundColor: micDenied ? 'rgba(138,101,32,0.25)' : 'rgba(176,42,42,0.18)',
+            backgroundColor: 'rgba(176,42,42,0.18)',
           }}
         >
-          <View
-            style={{
-              width: 9,
-              height: 9,
-              borderRadius: 5,
-              backgroundColor: micDenied ? C.amber : C.recordDot,
-            }}
-          />
-          <Txt f="sansSemi" size={13} color={micDenied ? '#E8C98A' : C.recordText}>
-            {micDenied ? L.micPermission : L.recording}
+          <View style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: C.recordDot }} />
+          <Txt f="sansSemi" size={13} color={C.recordText}>
+            {/* The phone's own recorder is capturing the call on Android. */}
+            {Platform.OS === 'android' ? L.recording : L.callInProgress}
           </Txt>
           <Mono f="monoMedium" size={13} color={C.onDark60}>
-            {mmss}
+            {mmss(elapsed)}
           </Mono>
         </View>
-      ) : null}
-
-      {phase === 'live' && !micDenied ? (
-        <Txt size={12} lh={18} color={C.onDark50} align="center" style={{ marginTop: 12 }}>
-          {L.recordingHint}
-        </Txt>
       ) : null}
 
       {/* order context */}
@@ -245,51 +225,25 @@ export function CallSheet({ order }: { order: Order }) {
         <View style={{ flexDirection: 'row', gap: 14, alignSelf: 'stretch' }}>
           <PrimaryButton
             label={L.startCall}
-            onPress={() => void startCall()}
+            onPress={startCall}
             color={C.greenDeep}
             height={66}
             style={{ flex: 1 }}
           />
-          <Pressable
-            onPress={() => openSheet(null)}
-            style={{
-              width: 66,
-              height: 66,
-              borderRadius: 20,
-              backgroundColor: C.onDark12,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
+          <SquareButton onPress={() => openSheet(null)}>
             <Txt f="sansSemi" size={16} color={C.white}>
               ✕
             </Txt>
-          </Pressable>
+          </SquareButton>
         </View>
       ) : null}
 
       {phase === 'live' ? (
         <View style={{ flexDirection: 'row', gap: 14, alignSelf: 'stretch' }}>
-          <PrimaryButton
-            label={L.endCall}
-            onPress={() => void endCall()}
-            color={C.red}
-            height={66}
-            style={{ flex: 1 }}
-          />
-          <Pressable
-            onPress={() => openSheet('wa')}
-            style={{
-              width: 66,
-              height: 66,
-              borderRadius: 20,
-              backgroundColor: C.onDark12,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
+          <PrimaryButton label={L.endCall} onPress={endCall} color={C.red} height={66} style={{ flex: 1 }} />
+          <SquareButton onPress={() => openSheet('wa')}>
             <WhatsAppIcon size={24} />
-          </Pressable>
+          </SquareButton>
         </View>
       ) : null}
 
@@ -298,25 +252,138 @@ export function CallSheet({ order }: { order: Order }) {
           <Txt f="sansSemi" size={13} color={C.onDark50} style={{ marginBottom: 4 }} align="center">
             {L.callNote}
           </Txt>
-          <OutcomeButton label={L.outcomeAnswered} color={C.greenDeep} onPress={() => void finish('answered')} />
-          <OutcomeButton label={L.outcomeNoAnswer} color={C.amber} onPress={() => void finish('noanswer')} />
+          <OutcomeButton label={L.outcomeAnswered} color={C.greenDeep} onPress={() => pickOutcome('answered')} />
+          <OutcomeButton label={L.outcomeNoAnswer} color={C.amber} onPress={() => pickOutcome('noanswer')} />
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <OutcomeButton
               label={L.outcomeWrongNumber}
               color={C.onDark12}
-              onPress={() => void finish('wrongnumber')}
+              onPress={() => pickOutcome('wrongnumber')}
               style={{ flex: 1 }}
             />
             <OutcomeButton
               label={L.outcomeRefused}
               color={C.red}
-              onPress={() => void finish('refused')}
+              onPress={() => pickOutcome('refused')}
               style={{ flex: 1 }}
             />
           </View>
         </View>
       ) : null}
+
+      {phase === 'recording' ? (
+        <View style={{ alignSelf: 'stretch', gap: 8 }}>
+          <RecordingStatus state={recording} L={L} mmss={mmss} />
+          {recording.status === 'ready' ? (
+            <OutcomeButton
+              label={L.attachAndSave}
+              color={C.greenDeep}
+              onPress={() => void save(recording.file)}
+            />
+          ) : null}
+          {recording.status !== 'searching' ? (
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <OutcomeButton
+                label={L.chooseFile}
+                color={C.onDark12}
+                onPress={() => void chooseFile()}
+                style={{ flex: 1 }}
+              />
+              <OutcomeButton
+                label={L.saveWithoutRecording}
+                color={C.onDark12}
+                onPress={() => void save(null)}
+                style={{ flex: 1 }}
+              />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </View>
+  );
+}
+
+function RecordingStatus({
+  state,
+  L,
+  mmss,
+}: {
+  state: RecordingState;
+  L: ReturnType<typeof useApp>['L'];
+  mmss: (s: number) => string;
+}) {
+  const box = {
+    backgroundColor: C.onDark06,
+    borderRadius: R.cardLg,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 4,
+  } as const;
+
+  if (state.status === 'searching') {
+    return (
+      <View style={[box, { flexDirection: 'row', alignItems: 'center', gap: 12 }]}>
+        <ActivityIndicator color={C.green} />
+        <Txt f="sansSemi" size={14} color={C.white}>
+          {L.findingRecording}
+        </Txt>
+      </View>
+    );
+  }
+  if (state.status === 'ready') {
+    const f = state.file;
+    const time = f.createdAt
+      ? new Date(f.createdAt).toLocaleTimeString('en-GB', {
+          timeZone: 'Africa/Cairo',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        })
+      : '';
+    return (
+      <View style={box}>
+        <Txt f="sansSemi" size={12} color={C.onDark50} style={{ marginBottom: 6 }}>
+          {L.recordingFound}
+        </Txt>
+        <Txt size={14} color={C.white} numberOfLines={2}>
+          {f.name}
+        </Txt>
+        <Mono f="monoMedium" size={12} color={C.onDark55} style={{ marginTop: 4 }}>
+          {[f.durationSec !== null ? mmss(f.durationSec) : '', time].filter(Boolean).join(' · ')}
+        </Mono>
+      </View>
+    );
+  }
+  const text =
+    state.status === 'denied'
+      ? L.recordingDenied
+      : state.status === 'none'
+        ? L.noRecordingFound
+        : L.pickRecordingHint;
+  return (
+    <View style={box}>
+      <Txt f="sansSemi" size={14} color={C.white} align="center">
+        {text}
+      </Txt>
+    </View>
+  );
+}
+
+function SquareButton({ onPress, children }: { onPress: () => void; children: React.ReactNode }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={{
+        width: 66,
+        height: 66,
+        borderRadius: 20,
+        backgroundColor: C.onDark12,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {children}
+    </Pressable>
   );
 }
 

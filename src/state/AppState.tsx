@@ -8,7 +8,8 @@ import React, {
   useState,
 } from 'react';
 
-import { logActivity, makeEntry, appendActivity, type CallOutcome } from '../api/activity';
+import { logActivity, makeEntry, appendActivity } from '../api/activity';
+import { processCall, type CallArgs } from '../api/callProcessing';
 import {
   cancelDelivery,
   searchDeliveries,
@@ -125,16 +126,7 @@ type Ctx = {
   markReady: (order: Order) => Promise<void>;
   cancelOrder: (order: Order) => Promise<void>;
   saveEdit: (order: Order) => Promise<void>;
-  logCall: (
-    order: Order,
-    args: {
-      target: 'customer' | 'courier';
-      phone: string;
-      durationSec: number;
-      outcome: CallOutcome;
-      recordingUri: string | null;
-    },
-  ) => Promise<void>;
+  logCall: (order: Order, args: CallArgs) => Promise<void>;
   logWhatsApp: (order: Order, title: string, body: string, phone: string) => Promise<void>;
   attachPhoto: (order: Order, uri: string) => Promise<void>;
   handleScan: (code: string) => Promise<Order | null>;
@@ -465,51 +457,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const logCall = useCallback<Ctx['logCall']>(
     async (order, args) => {
-      setBusy(args.recordingUri ? L.callUploading : L.syncing);
+      setBusy(args.recording ? L.callUploading : L.syncing);
       try {
-        let mediaUrl: string | null = null;
-        if (args.recordingUri) {
-          try {
-            mediaUrl = await uploadToShopify(args.recordingUri, 'audio', {
-              orderName: order.name,
-              label: `call-${args.target}`,
-            });
-          } catch (err) {
-            // Never lose the call record because the upload failed.
-            mediaUrl = null;
-            await logActivity(
-              order.shopifyId,
-              'note',
-              `Call recording upload failed: ${err instanceof Error ? err.message : 'unknown'}`,
-            );
-          }
-        }
-
-        const who = args.target === 'courier' ? 'courier' : 'customer';
-        const outcomeText: Record<CallOutcome, string> = {
-          answered: 'answered — confirmed',
-          noanswer: 'no answer',
-          wrongnumber: 'wrong number',
-          refused: 'refused the order',
-        };
-
-        await appendActivity(order.shopifyId, [
-          makeEntry('call', `Call to ${who} ${args.phone} — ${outcomeText[args.outcome]}`, {
-            durationSec: args.durationSec,
-            outcome: args.outcome,
-            mediaUrl: mediaUrl ?? undefined,
-            meta: { awb: order.awb, target: args.target },
-          }),
-          ...(mediaUrl
-            ? [
-                makeEntry('recording', `Call recording attached (${args.durationSec}s)`, {
-                  mediaUrl,
-                  durationSec: args.durationSec,
-                }),
-              ]
-            : []),
-        ]);
-
+        const entries = await processCall(order, args, (stage) =>
+          setBusy(stage === 'uploading' ? L.callUploading : L.syncing),
+        );
+        await appendActivity(order.shopifyId, entries);
         showToast(L.callLogged);
         await refreshOne(order.shopifyId);
       } catch (err) {
