@@ -101,6 +101,12 @@ npm run verify            # confirm credentials, scopes and the Shopify↔Bosta 
 npx expo start --tunnel   # then scan the QR code with Expo Go (Android or iPhone)
 ```
 
+In a GitHub Codespace use `npm run start:codespace` instead. It is the same
+tunnel start with `EXPO_UNSTABLE_HEADLESS=1`, which stops React Native from
+preparing its desktop DevTools window. A Codespace has no screen for that
+window, so without the flag Metro prints a harmless
+`libatk-1.0.so.0: cannot open shared object file` error.
+
 `npm run verify -- --write` additionally writes one log entry to a real order so
 you can confirm the timeline entry appears in Shopify admin.
 
