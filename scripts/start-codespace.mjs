@@ -138,6 +138,37 @@ async function probe(base) {
   }
 }
 
+/**
+ * Build the iOS and Android bundles before showing the QR code. The first
+ * build takes a minute or more in a Codespace, and GitHub's forwarding gives
+ * up on slow answers with a 502 — so the phone must only ask once Metro has
+ * the bundle ready. Uses the exact bundle URL Expo Go will request.
+ */
+async function warmBundles() {
+  for (const platform of ['ios', 'android']) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${PORT}/`, {
+        headers: { 'expo-platform': platform, accept: 'application/expo+json,application/json' },
+        signal: AbortSignal.timeout(20_000),
+      });
+      const bundle = new URL((await res.json()).launchAsset.url);
+      const started = Date.now();
+      console.log(`Building the ${platform === 'ios' ? 'iPhone' : 'Android'} bundle before showing the QR code…`);
+      const b = await fetch(`http://127.0.0.1:${PORT}${bundle.pathname}${bundle.search}`, {
+        signal: AbortSignal.timeout(600_000),
+      });
+      await b.arrayBuffer();
+      console.log(
+        b.ok
+          ? green(`  ${platform === 'ios' ? 'iPhone' : 'Android'} bundle ready (${Math.round((Date.now() - started) / 1000)} s).`)
+          : yellow(`  Metro answered ${b.status} building the bundle — see the error above.`),
+      );
+    } catch (err) {
+      console.log(yellow(`  Couldn't build the bundle ahead (${err instanceof Error ? err.message : err}); the phone will wait for it instead.`));
+    }
+  }
+}
+
 // ── 1. GitHub's forwarded address ────────────────────────────────────────────
 
 function makePortPublic() {
@@ -165,6 +196,7 @@ function githubAdvice(status) {
 async function runGithub() {
   startExpo({ EXPO_PACKAGER_PROXY_URL: publicUrl, EXPO_NO_QR_CODE: '1' }, []);
   if (!(await metroRunning())) return false;
+  await warmBundles();
 
   await makePortPublic();
   const end = Date.now() + GITHUB_WAIT_MS;
@@ -248,6 +280,7 @@ async function runTunnel() {
   while (Date.now() < end && !exited) {
     const host = await tunnelHost();
     if (host && (await probe(`https://${host}`)).ok) {
+      await warmBundles();
       printReady(`exp://${host}`, `https://${host}/status`);
       return;
     }
