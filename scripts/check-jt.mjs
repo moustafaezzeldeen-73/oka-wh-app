@@ -50,7 +50,10 @@ const unreachable = (e) =>
 console.log('\n\x1b[1mLive J&T API\x1b[0m');
 try {
   const data = await jtCall(jt, '/api/order/getOrders', { command: 1, serialNumber: ['SHOPIFY0'] }, true);
-  ok('keys accepted — signed order query succeeded', `${Array.isArray(data) ? data.length : 0} results for a dummy reference, as expected`);
+  ok('keys accepted — signed order query answered', `${Array.isArray(data) ? data.length : 0} parcels under a dummy reference, as expected`);
+  if (!awbs.length) {
+    console.log('      \x1b[2mFor a lookup that returns a real parcel: npm run check:jt -- <AWB>\x1b[0m');
+  }
 } catch (e) {
   if (unreachable(e)) {
     bad(`could not reach ${new URL(jt.baseUrl).host}`, `${networkReason(e)}\n      This network blocks J&T. Run it from the Codespace, or allow the host.`);

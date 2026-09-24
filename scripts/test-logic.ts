@@ -29,6 +29,7 @@ import {
   cancelPayload,
   courierFromScan,
   formEncode,
+  isEmptyLookupError,
   jtAttempts,
   jtCourier,
   jtEvents,
@@ -1144,6 +1145,12 @@ section('J&T updates resubmit the whole order');
   });
   eq('reference ↔ order name', [txIdForOrder('#2779521'), orderNameForTxId('SHOPIFY2779521'), orderNameForTxId('OTHER1')], ['SHOPIFY2779521', '#2779521', null]);
   eq('prefix stripper leaves plain numbers', stripJtPhonePrefix('01025843317'), '01025843317');
+  eq(
+    "J&T's no-match error is recognised as an empty result",
+    isEmptyLookupError('999001030', '参数无效:waybillNos size must be between 1 and 1000;'),
+    true,
+  );
+  eq('other J&T errors still count as errors', isEmptyLookupError('999001030', 'digest is invalid'), false);
 }
 
 tokenTests().then(() => {

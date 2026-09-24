@@ -75,6 +75,10 @@ export async function jtCall(jt, path, bizContent, withAuth) {
     // Not J&T answering — a proxy or gateway page.
   }
   if (!res.ok || !out) throw new Error(`HTTP ${res.status}: ${text.slice(0, 160).trim()}`);
+  // An order query that matches nothing comes back as this error, not as [].
+  if (path === '/api/order/getOrders' && out.code === '999001030' && /waybillNos size/i.test(out.msg ?? '')) {
+    return [];
+  }
   if (out.code !== '1') throw new Error(`J&T ${out.code}: ${out.msg}`);
   return out.data;
 }

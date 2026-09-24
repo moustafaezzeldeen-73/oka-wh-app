@@ -531,6 +531,15 @@ export function updatePayload(
   return payload;
 }
 
+/**
+ * J&T answers an order query that matches nothing with an error instead of an
+ * empty list — 999001030 "参数无效:waybillNos size must be between 1 and 1000"
+ * (seen live on 2026-09-24). It means "no such parcels", not a bad request.
+ */
+export function isEmptyLookupError(code: string | undefined, msg: string | undefined): boolean {
+  return code === '999001030' && /waybillNos size/i.test(msg ?? '');
+}
+
 export function cancelPayload(order: JtOrder, reason: string): Record<string, unknown> {
   return {
     txlogisticId: order.txlogisticId,
