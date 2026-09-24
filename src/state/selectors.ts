@@ -76,22 +76,30 @@ export function contactHistory(order: Order) {
 
 /**
  * Why a scanned order can't go on this truck, or null when it can. Courier
- * trucks take only their own AWBs; the in-house truck takes anything not
- * already booked with a courier.
+ * trucks take only their own AWBs. The in-house truck takes everything —
+ * including parcels booked with J&T or Bosta, which are sometimes rerouted to
+ * OKA's own delivery under the same AWB (see `isRerouted`).
  */
 export function truckRefusal(
   order: Order,
   truck: CarrierKey,
   L: Pick<Strings, 'wrongTruck' | 'noAwbForTruck' | 'inhouse'>,
 ): string | null {
-  const truckName = truck === 'inhouse' ? L.inhouse : CARRIER_NAME[truck];
-  const courierBooked = order.carrier === 'jt' || order.carrier === 'bosta';
-  if (truck === 'inhouse' ? !courierBooked : order.carrier === truck) return null;
-  if (courierBooked || order.carrier === 'inhouse') {
+  if (truck === 'inhouse' || order.carrier === truck) return null;
+  const truckName = CARRIER_NAME[truck];
+  if (order.carrier) {
     return L.wrongTruck
       .replace('{order}', order.name)
       .replace('{carrier}', order.carrierName)
       .replace('{truck}', truckName);
   }
   return L.noAwbForTruck.replace('{order}', order.name).replace('{truck}', truckName);
+}
+
+/**
+ * A J&T or Bosta parcel going out on the in-house truck: rerouted with its
+ * courier AWB. Only noted on the Shopify order — its courier stays as it is.
+ */
+export function isRerouted(order: Order, truck: CarrierKey): boolean {
+  return truck === 'inhouse' && (order.carrier === 'jt' || order.carrier === 'bosta');
 }

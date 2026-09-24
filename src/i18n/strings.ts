@@ -144,6 +144,7 @@ export const AR = {
   photoFailed: 'الصورة مترفعتش',
   tapToRetry: 'اضغط على الصورة عشان تحاول تاني',
   photoProcessing: 'بتتجهز',
+  reroutedNote: 'اتحوّل للتوصيل الداخلي بنفس البوليصة — اتكتبت ملاحظة على {order}',
 } as const;
 
 export const EN: Record<keyof typeof AR, string> = {
@@ -285,6 +286,7 @@ export const EN: Record<keyof typeof AR, string> = {
   photoFailed: 'Photo not saved',
   tapToRetry: 'Tap the photo to try again',
   photoProcessing: 'processing',
+  reroutedNote: 'Rerouted to in-house with its AWB — note added to {order}',
 };
 
 export type Strings = typeof AR;

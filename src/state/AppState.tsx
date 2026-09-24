@@ -45,7 +45,7 @@ import {
   updateOrderNoteAndTags,
 } from '../api/shopify';
 import { stringsFor, type Lang, type Strings } from '../i18n/strings';
-import { truckRefusal } from './selectors';
+import { isRerouted, truckRefusal } from './selectors';
 
 export type Screen =
   | 'list'
@@ -692,27 +692,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const truck = truckCarrier;
       const reason = truckRefusal(order, truck, L);
       if (reason) return { ok: false, reason };
+      const rerouted = isRerouted(order, truck);
 
-      // Logged without blocking the next scan; in-house also tags the order so
-      // it shows as out for delivery.
+      // Logged without blocking the next scan. In-house also tags the order so
+      // it shows as out for delivery — except a rerouted courier parcel, which
+      // only gets the note: its courier and AWB stay as they are.
       void (async () => {
         try {
-          if (truck === 'inhouse' && !order.tags.some((t) => t.toLowerCase() === TAG_INHOUSE)) {
+          if (truck === 'inhouse' && !rerouted && !order.tags.some((t) => t.toLowerCase() === TAG_INHOUSE)) {
             await updateOrderNoteAndTags(order.shopifyId, null, [...order.tags, TAG_INHOUSE]);
           }
           await logActivity(
             order.shopifyId,
             'scan',
-            truck === 'inhouse'
-              ? 'Loaded on the in-house delivery truck — out for delivery'
-              : `Loaded on the ${CARRIER_NAME[truck]} truck (pickup scan)`,
-            { meta: { awb: order.awb, carrier: truck } },
+            rerouted
+              ? `Rerouted: loaded on the in-house delivery truck with ${order.carrierName} AWB ${order.awb}`
+              : truck === 'inhouse'
+                ? 'Loaded on the in-house delivery truck — out for delivery'
+                : `Loaded on the ${CARRIER_NAME[truck]} truck (pickup scan)`,
+            {
+              meta: rerouted
+                ? { awb: order.awb, truck: 'inhouse', courier: order.carrier, rerouted: true }
+                : { awb: order.awb, carrier: truck },
+            },
           );
           if (truck === 'inhouse') await refreshOne(order.shopifyId);
         } catch (err) {
           showToast(`${L.saveFailed}: ${err instanceof Error ? err.message : ''}`.trim());
         }
       })();
+      if (rerouted) showToast(L.reroutedNote.replace('{order}', order.name));
       return { ok: true };
     },
     [L, refreshOne, showToast, truckCarrier],

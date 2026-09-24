@@ -73,7 +73,7 @@ import {
   renderNote,
   type ActivityEntry,
 } from '../src/api/activityLog';
-import { applyFilter, callStatus, contactHistory, orderPhotos, truckRefusal } from '../src/state/selectors';
+import { applyFilter, callStatus, contactHistory, isRerouted, orderPhotos, truckRefusal } from '../src/state/selectors';
 import { stringsFor } from '../src/i18n/strings';
 import type { ShopifyOrder } from '../src/api/shopify';
 import { createTokenSource, ShopifyTokenError, type TokenFetcher } from '../src/api/shopifyToken';
@@ -1229,7 +1229,10 @@ section('Truck loading');
   eq('unbooked order refused on a courier truck', truckRefusal(plain, 'bosta', L), '#2623621 has no Bosta AWB');
   eq('unbooked order on the in-house truck', truckRefusal(plain, 'inhouse', L), null);
   eq('in-house order reloaded on the in-house truck', truckRefusal(inhouse, 'inhouse', L), null);
-  eq('courier parcel refused on the in-house truck', truckRefusal(jtOrder, 'inhouse', L), '#2623621 is booked with J&T Express, not In-house');
+  eq('rerouted courier parcel accepted on the in-house truck', truckRefusal(jtOrder, 'inhouse', L), null);
+  eq('Bosta parcel accepted on the in-house truck too', truckRefusal(bostaOrder, 'inhouse', L), null);
+  eq('courier parcel on the in-house truck counts as rerouted', [isRerouted(jtOrder, 'inhouse'), isRerouted(bostaOrder, 'inhouse')], [true, true]);
+  eq('not rerouted: in-house order, or a courier truck', [isRerouted(inhouse, 'inhouse'), isRerouted(plain, 'inhouse'), isRerouted(jtOrder, 'jt')], [false, false, false]);
   eq('in-house order refused on a courier truck', truckRefusal(inhouse, 'jt', L), '#2623621 is booked with In-house delivery, not J&T Express');
 }
 
