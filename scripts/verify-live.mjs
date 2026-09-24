@@ -13,15 +13,28 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import util from 'node:util';
 
 const WRITE = process.argv.includes('--write');
 
 // ── .env ─────────────────────────────────────────────────────────────────────
-const env = {};
+// Parsed the way Expo parses it for the app: an unquoted # starts a comment,
+// so `PASSWORD=abc#def` reaches the app as "abc".
+let env = {};
+const cutAtHash = [];
 try {
-  for (const line of readFileSync(new URL('../.env', import.meta.url), 'utf8').split('\n')) {
-    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
-    if (m) env[m[1]] = m[2].replace(/^["']|["']$/g, '').trim();
+  const text = readFileSync(new URL('../.env', import.meta.url), 'utf8');
+  if (typeof util.parseEnv === 'function') {
+    env = util.parseEnv(text);
+  } else {
+    for (const line of text.split('\n')) {
+      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
+      if (m) env[m[1]] = m[2].replace(/^(["'])(.*)\1$/, '$2').replace(/^([^"'][^#]*)#.*$/, '$1').trim();
+    }
+  }
+  for (const line of text.split('\n')) {
+    const m = /^\s*([A-Z0-9_]+)\s*=\s*([^"'\s].*)$/.exec(line);
+    if (m && m[2].includes('#')) cutAtHash.push(m[1]);
   }
 } catch {
   fail('No .env file found. Copy .env.example to .env and fill in your keys.');
@@ -123,6 +136,12 @@ function trackingOf(order) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 section('Configuration');
+for (const key of cutAtHash) {
+  fail(
+    `${key} contains # without quotes — the app only sees the part before it`,
+    `Wrap it in double quotes in .env: ${key}="…"`,
+  );
+}
 SHOP ? ok('SHOPIFY_STORE_DOMAIN set', SHOP) : fail('SHOPIFY_STORE_DOMAIN missing');
 if (STATIC_TOKEN) {
   ok('SHOPIFY_ADMIN_ACCESS_TOKEN set', 'permanent token');
