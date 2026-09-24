@@ -37,7 +37,7 @@ import { C } from './src/theme/tokens';
 I18nManager.allowRTL(false);
 
 export default function App() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     PlexAr_400Regular: IBMPlexSansArabic_400Regular,
     PlexAr_500Medium: IBMPlexSansArabic_500Medium,
     PlexAr_600SemiBold: IBMPlexSansArabic_600SemiBold,
@@ -47,7 +47,9 @@ export default function App() {
     PlexMono_600SemiBold: IBMPlexMono_600SemiBold,
   });
 
-  if (!fontsLoaded) {
+  // A font that fails to load (e.g. the dev server drops mid-download) falls
+  // back to the system font rather than holding the app on a spinner forever.
+  if (!fontsLoaded && !fontError) {
     return (
       <View style={{ flex: 1, backgroundColor: C.bg, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator size="large" color={C.green} />
