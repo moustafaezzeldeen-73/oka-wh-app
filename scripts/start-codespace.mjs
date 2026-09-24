@@ -74,10 +74,8 @@ async function announceWhenReachable() {
       console.log(
         [
           '',
-          yellow(bold(`Port ${PORT} is not public yet, so Expo Go can't reach it.`)),
+          ...forwardingAdvice(),
           made.ok ? '' : yellow(`  (automatic change failed: ${made.output.trim().split('\n')[0]})`),
-          `  Open the ${bold('PORTS')} tab next to the terminal, right-click port ${bold(PORT)}`,
-          `  → ${bold('Port Visibility')} → ${bold('Public')}. The QR code appears here once it is.`,
           '',
         ]
           .filter((l) => l !== '')
@@ -109,10 +107,8 @@ async function keepReachable() {
     if (!down) {
       down = true;
       console.log(
-        yellow(
-          bold(`\n${publicUrl} stopped answering`) +
-            ` — Expo Go will show a 404. Making port ${PORT} public again…` +
-            `\n  If this repeats: PORTS tab → right-click ${PORT} → Port Visibility → Public.\n`,
+        ['', yellow(bold(`${publicUrl} stopped answering — Expo Go will show an error.`)), ...forwardingAdvice(), ''].join(
+          '\n',
         ),
       );
     }
@@ -144,6 +140,9 @@ function makePortPublic() {
   });
 }
 
+/** HTTP status of the forwarded address (0 when it can't be reached at all). */
+let lastStatus = 0;
+
 /** True once the forwarded address serves Metro without a GitHub login. */
 async function reachable() {
   try {
@@ -151,10 +150,29 @@ async function reachable() {
       redirect: 'manual',
       signal: AbortSignal.timeout(10_000),
     });
+    lastStatus = res.status;
     return res.status === 200 && (await res.text()).includes('packager-status:running');
   } catch {
+    lastStatus = 0;
     return false;
   }
+}
+
+/** What to do about the forwarded address, from what GitHub answered. */
+function forwardingAdvice() {
+  if (lastStatus === 404) {
+    return [
+      yellow(bold(`GitHub isn't forwarding port ${PORT} (404), so Expo Go can't reach it.`)),
+      `  Open the ${bold('PORTS')} tab next to the terminal. If ${bold(PORT)} isn't listed, click`,
+      `  ${bold('Forward a Port')} (or ${bold('Add Port')}) and type ${bold(PORT)}. Then right-click it →`,
+      `  ${bold('Port Visibility')} → ${bold('Public')}. The QR code appears here once it answers.`,
+    ];
+  }
+  return [
+    yellow(bold(`Port ${PORT} is not public yet (${lastStatus || 'no answer'}), so Expo Go can't reach it.`)),
+    `  Open the ${bold('PORTS')} tab next to the terminal, right-click port ${bold(PORT)}`,
+    `  → ${bold('Port Visibility')} → ${bold('Public')}. The QR code appears here once it is.`,
+  ];
 }
 
 function printConnectInfo() {
