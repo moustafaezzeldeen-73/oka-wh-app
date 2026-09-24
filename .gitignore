@@ -1,0 +1,14 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+npm-debug.*
+.DS_Store
+
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+.test-build/
+dist/
