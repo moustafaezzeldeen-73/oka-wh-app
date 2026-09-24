@@ -182,6 +182,7 @@ server-side, which is what the proxy path is for.
 ```bash
 npm test          # typecheck + 270 logic and OAuth tests
 npm run verify    # live API checks against the real accounts
+npm run check:jt  # just the J&T keys (add AWBs to also read those parcels)
 npm run bundle:android
 ```
 

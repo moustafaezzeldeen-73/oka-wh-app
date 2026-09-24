@@ -11,35 +11,18 @@
  *   npm run verify -- --write # also writes a log entry to one real order
  */
 
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import util from 'node:util';
+import { jtCall, jtConfig, loadEnv } from './live-common.mjs';
 
 const WRITE = process.argv.includes('--write');
 
 // ── .env ─────────────────────────────────────────────────────────────────────
-// Parsed the way Expo parses it for the app: an unquoted # starts a comment,
-// so `PASSWORD=abc#def` reaches the app as "abc".
-let env = {};
-const cutAtHash = [];
-try {
-  const text = readFileSync(new URL('../.env', import.meta.url), 'utf8');
-  if (typeof util.parseEnv === 'function') {
-    env = util.parseEnv(text);
-  } else {
-    for (const line of text.split('\n')) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
-      if (m) env[m[1]] = m[2].replace(/^(["'])(.*)\1$/, '$2').replace(/^([^"'][^#]*)#.*$/, '$1').trim();
-    }
-  }
-  for (const line of text.split('\n')) {
-    const m = /^\s*([A-Z0-9_]+)\s*=\s*([^"'\s].*)$/.exec(line);
-    if (m && m[2].includes('#')) cutAtHash.push(m[1]);
-  }
-} catch {
+// Parsed the way Expo parses it for the app (see live-common.mjs).
+const loaded = loadEnv();
+if (!loaded) {
   fail('No .env file found. Copy .env.example to .env and fill in your keys.');
   process.exit(1);
 }
+const { env, cutAtHash } = loaded;
 
 const SHOP = (env.SHOPIFY_STORE_DOMAIN || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
 const CLIENT_ID = env.SHOPIFY_CLIENT_ID;
@@ -49,14 +32,7 @@ let TOKEN = STATIC_TOKEN;
 const VERSION = env.SHOPIFY_API_VERSION || '2026-07';
 const BOSTA_KEY = env.BOSTA_API_KEY;
 const BOSTA_URL = (env.BOSTA_BASE_URL || 'https://app.bosta.co/api/v2').replace(/\/$/, '');
-const JT = {
-  baseUrl: (env.JT_API_BASE_URL || 'https://openapi.jtjms-eg.com/webopenplatformapi').replace(/\/$/, ''),
-  apiAccount: env.JT_API_ACCOUNT,
-  privateKey: env.JT_PRIVATE_KEY,
-  customerCode: env.JT_CUSTOMER_CODE,
-  customerPassword: env.JT_CUSTOMER_PASSWORD,
-};
-const JT_READY = !!(JT.apiAccount && JT.privateKey && JT.customerCode && JT.customerPassword);
+const { jt: JT, ready: JT_READY } = jtConfig(env);
 const GEMINI_KEY = env.GEMINI_API_KEY;
 const GEMINI_MODEL = env.GEMINI_AUDIO_MODEL || 'gemini-2.5-flash';
 
@@ -96,29 +72,7 @@ async function bosta(method, path, payload) {
   return json.data ?? json;
 }
 
-/** Same signing as src/api/jtState.ts and the J&T connector. */
-async function jt(path, bizContent, withAuth) {
-  const b64md5 = (s) => createHash('md5').update(s, 'utf8').digest('base64');
-  const hashedPassword = createHash('md5').update(JT.customerPassword + 'jadada236t2').digest('hex').toUpperCase();
-  const body = withAuth
-    ? { customerCode: JT.customerCode, digest: b64md5(JT.customerCode + hashedPassword + JT.privateKey), ...bizContent }
-    : bizContent;
-  const json = JSON.stringify(body);
-  const res = await fetch(`${JT.baseUrl}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      apiAccount: JT.apiAccount,
-      digest: b64md5(json + JT.privateKey),
-      timestamp: String(Date.now()),
-    },
-    body: new URLSearchParams({ bizContent: json }).toString(),
-  });
-  const out = await res.json().catch(() => null);
-  if (!res.ok || !out) throw new Error(`HTTP ${res.status}`);
-  if (out.code !== '1') throw new Error(`J&T ${out.code}: ${out.msg}`);
-  return out.data;
-}
+const jt = (path, bizContent, withAuth) => jtCall(JT, path, bizContent, withAuth);
 
 /** Courier and AWB from the Shopify fulfillment, as the app reads them. */
 function trackingOf(order) {
