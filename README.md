@@ -16,9 +16,10 @@ live **Shopify Admin**, **J&T Express** and **Bosta** data. There is no mock dat
 | **Tracking** | Five-phase timeline with real timestamps from the courier, the delivering courier with call and WhatsApp actions, the J&T branch line, and J&T's full scan history with signature / proof-of-delivery photos and delivery codes. |
 | **Modes** | Truck-loading and shipping-status entry points, plus a live shift summary. |
 | **Shipping status** | Phone-number lookup showing the shipment stage and courier. |
-| **Truck loading** | Burst scan with beep and haptics, running count, undo. Each scan is logged onto its Shopify order. |
+| **Truck loading** | Pick the truck first — **J&T**, **Bosta** or **In-house** — then burst scan with beep and haptics, running count, undo. A parcel booked with another courier is refused with a red flash and the reason. Loading onto the in-house truck tags the order `oka-inhouse` (out for delivery). An order-number field covers parcels without a label. Each load is logged onto its Shopify order. |
 | **Call** | Places the call, records it, then captures the outcome and attaches the recording to the order. |
-| **Photo** | Camera capture, uploaded to Shopify Files and linked from the order log. |
+| **Photo** | Camera capture, uploaded to Shopify Files, added to the order's pinned **Warehouse photos** field (thumbnails on the Shopify order page) and linked from the order log. Each shot shows uploading / saved / failed-with-reason, and a failed one retries on tap. Photos show on the order detail and open full screen. |
+| **Mark delivered** | For in-house deliveries: enter what the delivery cost (saved to the pinned **In-house delivery cost** field), optionally record the courier's cash as paid in Shopify, and the order is tagged `oka-delivered`, logged, and — with the optional fulfillment permissions — marked fulfilled with carrier "OKA In-house". |
 | **WhatsApp** | Message templates populated from the live order, for the customer or the courier. |
 
 ## How Shopify and the couriers are joined
@@ -55,17 +56,22 @@ changes, cancellations — is written back to the Shopify order.
 Shopify's public Admin API has **no mutation for posting an order timeline
 comment**: `commentApprove` / `commentDelete` / `commentNotSpam` / `commentSpam`
 are blog comments, and there is no `commentEventCreate`. So the log is persisted
-the three ways that *are* public and merchant-visible:
+the ways that *are* public and merchant-visible:
 
 1. **`oka.activity_log` metafield** — the complete structured record
    (kind, timestamp, actor, duration, call outcome, media URL), append-only.
-2. **The order note** — a readable journal rendered on the order page. Each write
+2. **Pinned order fields** — `oka.photos` (Warehouse photos, a list of image
+   files the admin shows as thumbnails) and `oka.delivery_cost` (In-house
+   delivery cost). Shopify's API has no way for an app to post to the order
+   timeline itself — only staff can comment there — so these fields are how
+   photos appear on the order page.
+3. **The order note** — a readable journal rendered on the order page. Each write
    also produces a real entry on the order timeline
    (*"… added a note to this order."* — verified against the live store).
    Merchant-written text above the log marker is preserved, and the journal is
    capped so it never exceeds Shopify's 5000-character note limit; overflow stays
    in the metafield and the note says so.
-3. **Shopify Files** — photos and call recordings are uploaded via
+4. **Shopify Files** — photos and call recordings are uploaded via
    `stagedUploadsCreate` → `fileCreate`, and the resulting CDN URL is linked from
    both of the above.
 
@@ -180,7 +186,7 @@ server-side, which is what the proxy path is for.
 ## Tests
 
 ```bash
-npm test          # typecheck + 270 logic and OAuth tests
+npm test          # typecheck + 294 logic and OAuth tests
 npm run verify    # live API checks against the real accounts
 npm run check:jt  # just the J&T keys (add AWBs to also read those parcels)
 npm run bundle:android

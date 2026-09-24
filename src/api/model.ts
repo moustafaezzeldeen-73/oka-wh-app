@@ -32,15 +32,35 @@ import type { ActivityEntry } from './activityLog';
 // Couriers
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type CarrierKey = 'bosta' | 'jt';
+export type CarrierKey = 'bosta' | 'jt' | 'inhouse';
 
 export const CARRIER_NAME: Record<CarrierKey, string> = {
   bosta: 'Bosta',
   jt: 'J&T Express',
+  inhouse: 'In-house delivery',
 };
 
+/** Set when an order goes out on OKA's own truck (truck loading, In-house). */
+export const TAG_INHOUSE = 'oka-inhouse';
+/** Set when an in-house delivery is marked delivered. */
+export const TAG_DELIVERED = 'oka-delivered';
+
+const hasTag = (order: Pick<ShopifyOrder, 'tags'>, tag: string) =>
+  order.tags.some((t) => t.toLowerCase() === tag);
+
+/** File ids in the order's `oka.photos` field (a JSON list of Shopify File ids). */
+export function photoIdsOf(order: Pick<ShopifyOrder, 'photos'>): string[] {
+  try {
+    const ids = JSON.parse(order.photos?.value ?? '[]');
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
- * One order's parcel, from whichever courier carries it. `delivery` /
+ * One order's parcel, from whichever outside courier carries it (in-house
+ * deliveries have no AWB and are read from the order's own tags and log). `delivery` /
  * `shipment` is null when the AWB is known (from Shopify) but the courier's
  * API could not be read — no keys, or offline.
  */
@@ -190,6 +210,10 @@ export type Order = {
   problem: JtProblem | null;
   /** Scan-by-scan history, newest first (J&T). */
   events: JtEvent[];
+  /** In-house deliveries: what the delivery cost, once marked delivered. */
+  deliveryCost: number | null;
+  /** Shopify File ids of the warehouse photos (`oka.photos`). */
+  photoIds: string[];
   /**
    * The courier will collect a different amount than the customer owes on
    * Shopify. Only raised while the parcel is still on its way.
@@ -346,6 +370,25 @@ function jtTracking(s: JtShipment): Tracking {
   };
 }
 
+/**
+ * In-house deliveries: loaded (truck loading, In-house) counts as out for
+ * delivery; "Mark delivered" finishes it. Times come from the order's log.
+ */
+function inhouseTracking(order: ShopifyOrder, activity: ActivityEntry[]): Tracking {
+  const newestFirst = activity.slice().reverse();
+  const loaded = newestFirst.find((e) => e.kind === 'scan' && e.meta?.carrier === 'inhouse');
+  const delivered = newestFirst.find((e) => e.kind === 'status' && e.meta?.delivered === true);
+  const done = hasTag(order, TAG_DELIVERED) || delivered !== undefined;
+  const loadedAt = loaded?.at ?? null;
+  return {
+    ...NO_TRACKING,
+    phase: done ? 4 : 3,
+    times: [order.createdAt, loadedAt, loadedAt, loadedAt, delivered?.at ?? null],
+    locked: done,
+    stateValue: done ? 'Delivered (in-house)' : 'Out for delivery (in-house)',
+  };
+}
+
 function trackingOf(parcel: Parcel | null): Tracking {
   if (parcel?.carrier === 'bosta' && parcel.delivery) return bostaTracking(parcel.delivery);
   if (parcel?.carrier === 'jt' && parcel.shipment) return jtTracking(parcel.shipment);
@@ -384,7 +427,10 @@ export function buildOrder(
 ): Order {
   const delivery = parcel?.carrier === 'bosta' ? parcel.delivery : null;
   const jt = parcel?.carrier === 'jt' ? (parcel.shipment?.order ?? null) : null;
-  const t = trackingOf(parcel);
+  // An outside courier's parcel wins; otherwise the in-house tag decides.
+  const inhouse = !parcel && hasTag(order, TAG_INHOUSE);
+  const t = inhouse ? inhouseTracking(order, activity) : trackingOf(parcel);
+  const carrier: CarrierKey | null = parcel?.carrier ?? (inhouse ? 'inhouse' : null);
 
   const items = itemsOf(order);
   const customerName =
@@ -421,8 +467,8 @@ export function buildOrder(
     shopifyId: order.id,
     name: order.name,
     awb: parcel?.awb ?? null,
-    carrier: parcel?.carrier ?? null,
-    carrierName: parcel ? CARRIER_NAME[parcel.carrier] : '',
+    carrier,
+    carrierName: carrier ? CARRIER_NAME[carrier] : '',
     bostaId: delivery?._id ?? null,
     jtOrder: jt,
 
@@ -452,6 +498,8 @@ export function buildOrder(
     phaseTimes: t.times,
     problem: t.problem,
     events: t.events,
+    deliveryCost: order.deliveryCost?.value ? num(order.deliveryCost.value) : null,
+    photoIds: photoIdsOf(order),
     codMismatch:
       courierCod !== undefined &&
       Math.round(courierCod) !== Math.round(shopifyCod) &&

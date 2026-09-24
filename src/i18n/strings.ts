@@ -126,6 +126,24 @@ export const AR = {
   codMismatchBody: '{courier} هيحصّل {a} جنيه · شوبيفاي {b} جنيه',
   syncCod: 'صحّح مبلغ التحصيل عند شركة الشحن',
   codSynced: 'مبلغ التحصيل اتصحح',
+  truckCourier: 'الشحنة رايحة مع',
+  inhouse: 'توصيل داخلي',
+  wrongTruck: '{order} متسجل مع {carrier} — مش {truck}',
+  noAwbForTruck: '{order} ملوش بوليصة {truck}',
+  newTruck: 'تبدأ شاحنة جديدة؟',
+  newTruckBody: 'الـ {n} أوردر اللي اتمسحوا اتسجلوا خلاص على أوردراتهم.',
+  orderNumber: 'رقم الأوردر',
+  add: 'إضافة',
+  markDelivered: 'اتسلم للعميل',
+  deliveryCostLabel: 'تكلفة التوصيل (جنيه)',
+  cashCollected: 'اتحصل {cod} جنيه كاش — سجّله مدفوع في شوبيفاي',
+  confirmDelivered: 'تأكيد التسليم',
+  deliveredInhouse: 'اتسلم · تكلفة التوصيل {cost} جنيه',
+  costRequired: 'اكتب تكلفة التوصيل',
+  markedDelivered: 'الأوردر اتسجل إنه اتسلم',
+  photoFailed: 'الصورة مترفعتش',
+  tapToRetry: 'اضغط على الصورة عشان تحاول تاني',
+  photoProcessing: 'بتتجهز',
 } as const;
 
 export const EN: Record<keyof typeof AR, string> = {
@@ -249,6 +267,24 @@ export const EN: Record<keyof typeof AR, string> = {
   codMismatchBody: '{courier} collects {a} EGP · Shopify says {b} EGP',
   syncCod: 'Set courier COD to the Shopify amount',
   codSynced: 'Courier COD corrected',
+  truckCourier: 'This truck is for',
+  inhouse: 'In-house',
+  wrongTruck: '{order} is booked with {carrier}, not {truck}',
+  noAwbForTruck: '{order} has no {truck} AWB',
+  newTruck: 'Start a new truck?',
+  newTruckBody: 'The {n} orders scanned so far stay logged on their orders.',
+  orderNumber: 'Order number',
+  add: 'Add',
+  markDelivered: 'Mark delivered',
+  deliveryCostLabel: 'Delivery cost (EGP)',
+  cashCollected: 'Collected {cod} EGP cash — mark it paid in Shopify',
+  confirmDelivered: 'Confirm delivery',
+  deliveredInhouse: 'Delivered · delivery cost {cost} EGP',
+  costRequired: 'Enter the delivery cost',
+  markedDelivered: 'Order marked delivered',
+  photoFailed: 'Photo not saved',
+  tapToRetry: 'Tap the photo to try again',
+  photoProcessing: 'processing',
 };
 
 export type Strings = typeof AR;
@@ -279,12 +315,13 @@ export const FILTER_KEYS = [
   'readypickup',
   'bosta',
   'jt',
+  'inhouse',
 ] as const;
 
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
 export const FILTER_LABELS: Record<Lang, string[]> = {
-  ar: ['الكل', 'جاهز', 'عنوان ناقص', 'ملغي', 'لسه متصل', 'مردش', 'رد', 'جاهز للاستلام', 'بوسطة', 'J&T'],
+  ar: ['الكل', 'جاهز', 'عنوان ناقص', 'ملغي', 'لسه متصل', 'مردش', 'رد', 'جاهز للاستلام', 'بوسطة', 'J&T', 'توصيل داخلي'],
   en: [
     'All',
     'Ready',
@@ -296,5 +333,6 @@ export const FILTER_LABELS: Record<Lang, string[]> = {
     'Ready for pickup',
     'Bosta',
     'J&T',
+    'In-house',
   ],
 };

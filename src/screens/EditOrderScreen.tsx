@@ -1,5 +1,6 @@
 import React from 'react';
-import { Pressable, ScrollView, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BackButton, Card, Mono, PrimaryButton, Thumb, Txt } from '../components/primitives';
 import { money, type Order } from '../api/model';
@@ -14,6 +15,7 @@ export function EditOrderScreen({ order }: { order: Order }) {
   const { L, ar, go, draft, setQty, addProduct, setDraftAddress, draftTotals, saveEdit, catalog, busy, showToast } =
     useApp();
 
+  const insets = useSafeAreaInsets();
   const totals = draftTotals(order);
   const locked = order.locked;
   const address = draft.address ?? order.address;
@@ -27,7 +29,10 @@ export function EditOrderScreen({ order }: { order: Order }) {
   };
 
   return (
-    <View style={{ flex: 1, minHeight: 0 }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, minHeight: 0 }}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       <View
         style={{
           flexDirection: 'row',
@@ -45,9 +50,39 @@ export function EditOrderScreen({ order }: { order: Order }) {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: 120, gap: 9 }}
+        contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: 24, gap: 9 }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
       >
+        {/* Address first: at the bottom the keyboard covered it. */}
+        <View style={{ marginBottom: 9 }}>
+          <Txt f="sansSemi" size={13} color={C.ink45} style={{ marginBottom: 7 }}>
+            {L.deliverTo}
+          </Txt>
+          <TextInput
+            value={address}
+            onChangeText={setDraftAddress}
+            editable={!locked}
+            multiline
+            textAlign={ar ? 'right' : 'left'}
+            style={{
+              minHeight: 64,
+              backgroundColor: C.surface,
+              borderWidth: 1,
+              borderColor: C.borderInput,
+              borderRadius: R.card,
+              paddingVertical: 12,
+              paddingHorizontal: 13,
+              fontFamily: F.sans,
+              fontSize: 14,
+              lineHeight: 21,
+              color: C.ink,
+              textAlignVertical: 'top',
+              opacity: locked ? 0.5 : 1,
+            }}
+          />
+        </View>
         {order.items.map((it) => {
           const qty = draft.quantities[it.lineItemId] ?? it.quantity;
           return (
@@ -179,45 +214,17 @@ export function EditOrderScreen({ order }: { order: Order }) {
           </Card>
         ))}
 
-        <View style={{ marginTop: 18 }}>
-          <Txt f="sansSemi" size={13} color={C.ink45} style={{ marginBottom: 7 }}>
-            {L.deliverTo}
-          </Txt>
-          <TextInput
-            value={address}
-            onChangeText={setDraftAddress}
-            editable={!locked}
-            multiline
-            textAlign={ar ? 'right' : 'left'}
-            style={{
-              minHeight: 64,
-              backgroundColor: C.surface,
-              borderWidth: 1,
-              borderColor: C.borderInput,
-              borderRadius: R.card,
-              paddingVertical: 12,
-              paddingHorizontal: 13,
-              fontFamily: F.sans,
-              fontSize: 14,
-              lineHeight: 21,
-              color: C.ink,
-              textAlignVertical: 'top',
-              opacity: locked ? 0.5 : 1,
-            }}
-          />
-        </View>
       </ScrollView>
 
+      {/* In the layout flow, not floating, so the keyboard pushes it up. */}
       <View
         style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
           paddingTop: 12,
           paddingHorizontal: GUTTER,
-          paddingBottom: 22,
+          paddingBottom: 12 + insets.bottom,
           backgroundColor: C.bg,
+          borderTopWidth: 1,
+          borderTopColor: C.border,
           flexDirection: 'row',
           alignItems: 'center',
           gap: 10,
@@ -239,6 +246,6 @@ export function EditOrderScreen({ order }: { order: Order }) {
           style={{ paddingHorizontal: 30 }}
         />
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }

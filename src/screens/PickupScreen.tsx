@@ -2,25 +2,66 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useAudioPlayer } from 'expo-audio';
 import React, { useCallback, useRef, useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { Alert, Pressable, ScrollView, TextInput, View } from 'react-native';
 
 import { Barcode } from '../components/Barcode';
 import { CheckSmallIcon } from '../components/Icons';
 import { Mono, Txt } from '../components/primitives';
-import { logActivity } from '../api/activity';
+import { CARRIER_NAME, type CarrierKey } from '../api/model';
 import { useApp } from '../state/AppState';
-import { C, GUTTER, R } from '../theme/tokens';
+import { C, F, GUTTER, R } from '../theme/tokens';
+
+const TRUCKS: CarrierKey[] = ['jt', 'bosta', 'inhouse'];
 
 /**
- * Burst scan for truck loading: the camera stays live, each accepted AWB
- * increments the counter, beeps, and is logged onto its Shopify order.
+ * Burst scan for truck loading: pick the truck (J&T pickup, Bosta pickup or
+ * OKA's own in-house run), then the camera stays live and each accepted parcel
+ * increments the counter, beeps, and is logged onto its Shopify order. A parcel
+ * booked with another courier is refused with a red flash. In-house loading
+ * also tags the order as out for delivery.
  */
 export function PickupScreen() {
-  const { L, go, scanned, pushScanned, undoScan, beep, toggleBeep, handleScan, orders, showToast } =
-    useApp();
+  const {
+    L,
+    go,
+    scanned,
+    pushScanned,
+    undoScan,
+    resetScans,
+    beep,
+    toggleBeep,
+    handleScan,
+    orders,
+    showToast,
+    truckCarrier,
+    setTruckCarrier,
+    loadOnTruck,
+  } = useApp();
   const [permission, requestPermission] = useCameraPermissions();
   const [flash, setFlash] = useState(false);
+  const [refused, setRefused] = useState(false);
+  const [manual, setManual] = useState('');
   const cooling = useRef(false);
+
+  const truckLabel = (c: CarrierKey) => (c === 'inhouse' ? L.inhouse : CARRIER_NAME[c]);
+
+  const chooseTruck = (c: CarrierKey) => {
+    if (c === truckCarrier) return;
+    if (scanned.length === 0) {
+      setTruckCarrier(c);
+      return;
+    }
+    Alert.alert(L.newTruck, L.newTruckBody.replace('{n}', String(scanned.length)), [
+      { text: L.no, style: 'cancel' },
+      {
+        text: L.yes,
+        onPress: () => {
+          resetScans();
+          setTruckCarrier(c);
+        },
+      },
+    ]);
+  };
 
   // A short click on every accepted scan, so the picker never looks at the screen.
   const player = useAudioPlayer(require('../../assets/beep.wav'));
@@ -42,6 +83,15 @@ export function PickupScreen() {
         return;
       }
 
+      const loaded = await loadOnTruck(order);
+      if (!loaded.ok) {
+        setRefused(true);
+        setTimeout(() => setRefused(false), 600);
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        showToast(loaded.reason);
+        return;
+      }
+
       setFlash(true);
       setTimeout(() => setFlash(false), 200);
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -55,14 +105,17 @@ export function PickupScreen() {
       }
 
       pushScanned(order.shopifyId);
-
-      // Log the load event onto the Shopify order without blocking the next scan.
-      void logActivity(order.shopifyId, 'scan', 'Loaded on the truck (pickup scan)', {
-        meta: { awb: order.awb },
-      }).catch(() => undefined);
     },
-    [L, beep, handleScan, player, pushScanned, scanned, showToast],
+    [L, beep, handleScan, loadOnTruck, player, pushScanned, scanned, showToast],
   );
+
+  const addManual = () => {
+    const digits = manual.replace(/\D/g, '');
+    if (!digits) return;
+    setManual('');
+    cooling.current = false;
+    void onCode(`#${digits}`);
+  };
 
   const rows = scanned
     .slice()
@@ -77,7 +130,7 @@ export function PickupScreen() {
       style={{
         flex: 1,
         minHeight: 0,
-        backgroundColor: flash ? C.greenFlash : C.greenDeep,
+        backgroundColor: flash ? C.greenFlash : refused ? C.red : C.greenDeep,
       }}
     >
       <View
@@ -117,9 +170,39 @@ export function PickupScreen() {
         </Pressable>
       </View>
 
-      <View style={{ paddingTop: 26, paddingHorizontal: GUTTER, paddingBottom: 22, alignItems: 'center' }}>
+      {/* ── which truck ── */}
+      <View style={{ paddingTop: 10, paddingHorizontal: GUTTER }}>
+        <Txt f="sansSemi" size={12} color={C.onDark70} style={{ marginBottom: 6 }}>
+          {L.truckCourier}
+        </Txt>
+        <View style={{ flexDirection: 'row', gap: 6 }}>
+          {TRUCKS.map((c) => {
+            const on = c === truckCarrier;
+            return (
+              <Pressable
+                key={c}
+                onPress={() => chooseTruck(c)}
+                style={{
+                  flex: 1,
+                  height: 40,
+                  borderRadius: R.pill,
+                  backgroundColor: on ? C.white : C.onDark12,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Txt f="sansSemi" size={14} color={on ? C.greenDeep : C.white}>
+                  {truckLabel(c)}
+                </Txt>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      <View style={{ paddingTop: 18, paddingHorizontal: GUTTER, paddingBottom: 16, alignItems: 'center' }}>
         <Txt f="sansSemi" size={13} color={C.onDark70} ls={1.04}>
-          {L.pickup}
+          {L.pickup} · {truckLabel(truckCarrier)}
         </Txt>
         <Mono size={108} lh={108} ls={-6} color={C.white} style={{ marginTop: 6, marginBottom: 4 }}>
           {scanned.length}
@@ -160,6 +243,45 @@ export function PickupScreen() {
             {granted ? L.tapScan : L.grantPermission}
           </Txt>
         </Pressable>
+
+        {/* For parcels without a label — in-house orders often have none. */}
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 10, alignSelf: 'stretch' }}>
+          <TextInput
+            value={manual}
+            onChangeText={setManual}
+            onSubmitEditing={addManual}
+            keyboardType="number-pad"
+            returnKeyType="done"
+            placeholder={L.orderNumber}
+            placeholderTextColor={C.onDark50}
+            style={{
+              flex: 1,
+              height: 44,
+              borderRadius: R.card,
+              backgroundColor: C.onDark12,
+              paddingHorizontal: 14,
+              fontFamily: F.monoMedium,
+              fontSize: 16,
+              color: C.white,
+              textAlign: 'left',
+            }}
+          />
+          <Pressable
+            onPress={addManual}
+            style={{
+              height: 44,
+              paddingHorizontal: 18,
+              borderRadius: R.card,
+              backgroundColor: C.white,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Txt f="sansSemi" size={14} color={C.greenDeep}>
+              {L.add}
+            </Txt>
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView

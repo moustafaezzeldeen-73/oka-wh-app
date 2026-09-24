@@ -19,7 +19,10 @@ import {
   money,
   normalizePhone,
   parcelFromShopify,
+  photoIdsOf,
   pickParcel,
+  TAG_DELIVERED,
+  TAG_INHOUSE,
   waNumber,
 } from '../src/api/model';
 import {
@@ -70,7 +73,8 @@ import {
   renderNote,
   type ActivityEntry,
 } from '../src/api/activityLog';
-import { applyFilter, callStatus, contactHistory, orderPhotos } from '../src/state/selectors';
+import { applyFilter, callStatus, contactHistory, orderPhotos, truckRefusal } from '../src/state/selectors';
+import { stringsFor } from '../src/i18n/strings';
 import type { ShopifyOrder } from '../src/api/shopify';
 import { createTokenSource, ShopifyTokenError, type TokenFetcher } from '../src/api/shopifyToken';
 import {
@@ -1152,6 +1156,81 @@ section('J&T updates resubmit the whole order');
   );
   eq('…also when J&T sends the code as a number', isEmptyLookupError(999001030, 'waybillNos size must be between 1 and 1000'), true);
   eq('other J&T errors still count as errors', isEmptyLookupError('999001030', 'digest is invalid'), false);
+}
+
+section('Warehouse photos');
+{
+  eq('photo ids from the oka.photos field', photoIdsOf({ photos: { value: '["gid://shopify/MediaImage/1","gid://shopify/MediaImage/2"]' } }), [
+    'gid://shopify/MediaImage/1',
+    'gid://shopify/MediaImage/2',
+  ]);
+  eq('empty or broken field → none', [photoIdsOf({ photos: null }), photoIdsOf({ photos: { value: 'oops' } })], [[], []]);
+
+  const o = buildOrder(
+    { ...SHOPIFY_ORDER, photos: { value: '["gid://shopify/MediaImage/1","gid://shopify/MediaImage/9"]' } } as ShopifyOrder,
+    null,
+    [
+      makeEntry('photo', 'Photo', { mediaUrl: 'https://cdn.shopify.com/a.jpg', meta: { fileId: 'gid://shopify/MediaImage/1' } }),
+      makeEntry('photo', 'Photo still processing', { meta: { fileId: 'gid://shopify/MediaImage/5' } }),
+    ],
+    false,
+  );
+  const photos = orderPhotos(o);
+  eq('logged photo with its link', photos[0], { url: 'https://cdn.shopify.com/a.jpg', at: photos[0].at, fileId: 'gid://shopify/MediaImage/1' });
+  eq('logged photo still processing is kept, link to come', [photos[1].url, photos[1].fileId], [null, 'gid://shopify/MediaImage/5']);
+  eq('a file only in the field is added once', photos.map((p) => p.fileId), [
+    'gid://shopify/MediaImage/1',
+    'gid://shopify/MediaImage/5',
+    'gid://shopify/MediaImage/9',
+  ]);
+}
+
+section('In-house delivery');
+{
+  const loadedAt = '2026-09-24T10:00:00.000Z';
+  const deliveredAt = '2026-09-24T13:30:00.000Z';
+  const loadEntry = { ...makeEntry('scan', 'Loaded on the in-house delivery truck', { meta: { carrier: 'inhouse' } }), at: loadedAt };
+  const doneEntry = {
+    ...makeEntry('status', 'Delivered by in-house courier', { meta: { carrier: 'inhouse', delivered: true, deliveryCost: 45 } }),
+    at: deliveredAt,
+  };
+
+  const out = buildOrder({ ...SHOPIFY_ORDER, tags: [TAG_INHOUSE] } as ShopifyOrder, null, [loadEntry], false);
+  eq('tag makes it an in-house delivery', [out.carrier, out.carrierName, out.awb], ['inhouse', 'In-house delivery', null]);
+  eq('loaded → out for delivery', [out.trackPhase, out.status, out.locked], [3, 'transit', false]);
+  eq('loaded time on the timeline', [out.phaseTimes[1], out.phaseTimes[3], out.phaseTimes[4]], [loadedAt, loadedAt, null]);
+  eq('no courier COD to compare', out.codMismatch, null);
+
+  const done = buildOrder(
+    { ...SHOPIFY_ORDER, tags: [TAG_INHOUSE, TAG_DELIVERED], deliveryCost: { value: '45.0' } } as ShopifyOrder,
+    null,
+    [loadEntry, doneEntry],
+    false,
+  );
+  eq('delivered', [done.trackPhase, done.status, done.locked], [4, 'delivered', true]);
+  eq('delivered time', done.phaseTimes[4], deliveredAt);
+  eq('delivery cost from the order field', done.deliveryCost, 45);
+  eq('in-house filter', applyFilter([out, done, buildOrder(SHOPIFY_ORDER, null, [], false)], 'inhouse').length, 2);
+
+  const booked = buildOrder({ ...SHOPIFY_ORDER, tags: [TAG_INHOUSE] } as ShopifyOrder, jtParcel(JT_BOOKED), [], false);
+  eq('a courier parcel wins over the in-house tag', booked.carrier, 'jt');
+}
+
+section('Truck loading');
+{
+  const L = stringsFor('en');
+  const jtOrder = buildOrder(SHOPIFY_ORDER, jtParcel(JT_BOOKED), [], false);
+  const bostaOrder = buildOrder(SHOPIFY_ORDER, bostaParcel(BOSTA_NO_COURIER), [], false);
+  const plain = buildOrder(SHOPIFY_ORDER, null, [], false);
+  const inhouse = buildOrder({ ...SHOPIFY_ORDER, tags: [TAG_INHOUSE] } as ShopifyOrder, null, [], false);
+
+  eq('J&T parcel on the J&T truck', truckRefusal(jtOrder, 'jt', L), null);
+  eq('Bosta parcel refused on the J&T truck', truckRefusal(bostaOrder, 'jt', L), '#2623621 is booked with Bosta, not J&T Express');
+  eq('unbooked order refused on a courier truck', truckRefusal(plain, 'bosta', L), '#2623621 has no Bosta AWB');
+  eq('unbooked order on the in-house truck', truckRefusal(plain, 'inhouse', L), null);
+  eq('in-house order reloaded on the in-house truck', truckRefusal(inhouse, 'inhouse', L), null);
+  eq('courier parcel refused on the in-house truck', truckRefusal(jtOrder, 'inhouse', L), '#2623621 is booked with J&T Express, not In-house');
+  eq('in-house order refused on a courier truck', truckRefusal(inhouse, 'jt', L), '#2623621 is booked with In-house delivery, not J&T Express');
 }
 
 tokenTests().then(() => {

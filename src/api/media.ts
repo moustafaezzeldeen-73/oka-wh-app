@@ -151,6 +151,52 @@ async function waitForUrl(fileId: string, attempts = 12): Promise<string | null>
   return null;
 }
 
+/** Shopify's access-denied wording, turned into the fix. */
+function explainUploadError(err: unknown): Error {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/access denied|ACCESS_DENIED|write_files|read_files/i.test(msg)) {
+    return new Error(
+      'Shopify refused the upload: the app needs the read_files and write_files permissions. ' +
+        'Add them to the app version in the Shopify Dev Dashboard, release it, and approve the update on the store.',
+    );
+  }
+  return err instanceof Error ? err : new Error(msg);
+}
+
+/**
+ * Upload a local file; returns the Shopify File id and, once Shopify has
+ * processed it, its CDN URL (null if that takes longer than ~30 s — the file
+ * is still saved, and the id resolves to a URL later).
+ */
+export async function uploadFile(
+  localUri: string,
+  kind: UploadKind,
+  opts: {
+    orderName: string;
+    label: string;
+    fileSize?: number;
+    filename?: string;
+    mimeType?: string;
+  },
+): Promise<{ fileId: string; url: string | null }> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const safeOrder = opts.orderName.replace(/[^\w-]/g, '');
+  const ext = kind === 'image' ? 'jpg' : kind === 'text' ? 'txt' : 'm4a';
+  const mimeType =
+    opts.mimeType ??
+    (kind === 'image' ? 'image/jpeg' : kind === 'text' ? 'text/plain' : 'audio/mp4');
+  const filename = opts.filename ?? `oka-${safeOrder}-${opts.label}-${stamp}.${ext}`;
+
+  try {
+    const target = await createStagedTarget(filename, mimeType, kind, opts.fileSize);
+    await putBytes(target, localUri, filename, mimeType);
+    const fileId = await createFile(target.resourceUrl, kind, `${opts.orderName} · ${opts.label}`);
+    return { fileId, url: await waitForUrl(fileId) };
+  } catch (err) {
+    throw explainUploadError(err);
+  }
+}
+
 /**
  * Upload a local file and return its Shopify CDN URL.
  * Returns null only if Shopify never finished processing — the caller still
@@ -168,16 +214,5 @@ export async function uploadToShopify(
     mimeType?: string;
   },
 ): Promise<string | null> {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const safeOrder = opts.orderName.replace(/[^\w-]/g, '');
-  const ext = kind === 'image' ? 'jpg' : kind === 'text' ? 'txt' : 'm4a';
-  const mimeType =
-    opts.mimeType ??
-    (kind === 'image' ? 'image/jpeg' : kind === 'text' ? 'text/plain' : 'audio/mp4');
-  const filename = opts.filename ?? `oka-${safeOrder}-${opts.label}-${stamp}.${ext}`;
-
-  const target = await createStagedTarget(filename, mimeType, kind, opts.fileSize);
-  await putBytes(target, localUri, filename, mimeType);
-  const fileId = await createFile(target.resourceUrl, kind, `${opts.orderName} · ${opts.label}`);
-  return waitForUrl(fileId);
+  return (await uploadFile(localUri, kind, opts)).url;
 }

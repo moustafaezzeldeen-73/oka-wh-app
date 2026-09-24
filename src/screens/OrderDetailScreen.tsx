@@ -1,7 +1,8 @@
 import * as Clipboard from 'expo-clipboard';
 import { Image } from 'expo-image';
-import React from 'react';
-import { Alert, Pressable, ScrollView, View } from 'react-native';
+import React, { useState } from 'react';
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Barcode } from '../components/Barcode';
 import {
@@ -26,7 +27,8 @@ import {
 } from '../components/primitives';
 import { money, type Order } from '../api/model';
 import { useApp } from '../state/AppState';
-import { contactHistory, orderPhotos } from '../state/selectors';
+import { contactHistory } from '../state/selectors';
+import { usePhotos } from '../state/usePhotos';
 import { ProblemCard } from './TrackScreen';
 import { C, GUTTER, R, clarityColor, rankColor } from '../theme/tokens';
 
@@ -45,7 +47,11 @@ export function OrderDetailScreen({ order }: { order: Order }) {
     busy,
   } = useApp();
 
-  const photos = orderPhotos(order);
+  const insets = useSafeAreaInsets();
+  const photos = usePhotos(order);
+  const [viewing, setViewing] = useState<string | null>(null);
+  const inhouse = order.carrier === 'inhouse';
+  const inhouseOpen = inhouse && order.status !== 'delivered' && order.status !== 'cancelled';
   const history = contactHistory(order);
   const editable = !order.locked;
 
@@ -84,7 +90,7 @@ export function OrderDetailScreen({ order }: { order: Order }) {
         {/* ── AWB ── */}
         <Card style={{ padding: 18, alignItems: 'center', borderRadius: R.panel }}>
           <Txt f="sansMedium" size={11} color={C.ink40} ls={0.66}>
-            {L.awb} · {order.carrierName || L.notBooked}
+            {inhouse ? order.carrierName : `${L.awb} · ${order.carrierName || L.notBooked}`}
           </Txt>
           <Pressable
             onPress={() => {
@@ -94,11 +100,24 @@ export function OrderDetailScreen({ order }: { order: Order }) {
             }}
           >
             <Mono size={30} lh={36} ls={-1} style={{ marginTop: 4, marginBottom: 12 }}>
-              {order.awb ?? '—'}
+              {order.awb ?? (inhouse ? order.name : '—')}
             </Mono>
           </Pressable>
-          <Barcode value={order.awb} height={44} color={C.ink} />
+          <Barcode value={order.awb ?? (inhouse ? order.name : null)} height={44} color={C.ink} />
         </Card>
+
+        {/* ── in-house delivery done ── */}
+        {inhouse && order.status === 'delivered' ? (
+          <View
+            style={{ backgroundColor: '#E8F3EC', borderRadius: R.card, padding: 14, marginTop: 12 }}
+          >
+            <Txt f="sansSemi" size={14} color={C.greenDeep}>
+              {order.deliveryCost !== null
+                ? L.deliveredInhouse.replace('{cost}', money(order.deliveryCost))
+                : L.evDelivered}
+            </Txt>
+          </View>
+        ) : null}
 
         {/* ── courier COD differs from Shopify ── */}
         {order.codMismatch ? (
@@ -426,25 +445,39 @@ export function OrderDetailScreen({ order }: { order: Order }) {
               {L.attached} · {photos.length}
             </Txt>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-              {photos.map((p) => (
-                <Image
-                  key={p.url}
-                  source={{ uri: p.url }}
+              {photos.map((p, i) => (
+                <Pressable
+                  key={p.fileId ?? p.url ?? i}
+                  disabled={!p.url}
+                  onPress={() => setViewing(p.url)}
                   style={{
                     width: 78,
                     height: 78,
                     borderRadius: R.tileLg,
                     backgroundColor: C.surfaceImage,
+                    overflow: 'hidden',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                   }}
-                  contentFit="cover"
-                />
+                >
+                  {p.url ? (
+                    <Image source={{ uri: p.url }} style={{ width: 78, height: 78 }} contentFit="cover" />
+                  ) : (
+                    <>
+                      <ActivityIndicator size="small" color={C.ink40} />
+                      <Txt size={10} color={C.ink40} style={{ marginTop: 4 }}>
+                        {L.photoProcessing}
+                      </Txt>
+                    </>
+                  )}
+                </Pressable>
               ))}
             </ScrollView>
           </View>
         ) : null}
       </ScrollView>
 
-      {/* ── sticky CTA ── */}
+      {/* ── sticky CTA: finish an in-house delivery, otherwise ready to load ── */}
       <View
         style={{
           position: 'absolute',
@@ -453,16 +486,39 @@ export function OrderDetailScreen({ order }: { order: Order }) {
           right: 0,
           paddingTop: 12,
           paddingHorizontal: GUTTER,
-          paddingBottom: 22,
+          paddingBottom: 12 + insets.bottom,
           backgroundColor: C.bg,
+          borderTopWidth: 1,
+          borderTopColor: C.border,
         }}
       >
-        <PrimaryButton
-          label={L.markReady}
-          onPress={() => void markReady(order)}
-          loading={busy !== null}
-        />
+        {inhouseOpen ? (
+          <PrimaryButton
+            label={L.markDelivered}
+            onPress={() => openSheet('deliver')}
+            color={C.greenDeep}
+            loading={busy !== null}
+          />
+        ) : (
+          <PrimaryButton
+            label={L.markReady}
+            onPress={() => void markReady(order)}
+            loading={busy !== null}
+          />
+        )}
       </View>
+
+      {/* ── full-screen photo ── */}
+      <Modal visible={viewing !== null} transparent animationType="fade" onRequestClose={() => setViewing(null)}>
+        <Pressable
+          onPress={() => setViewing(null)}
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center' }}
+        >
+          {viewing ? (
+            <Image source={{ uri: viewing }} style={{ width: '100%', height: '80%' }} contentFit="contain" />
+          ) : null}
+        </Pressable>
+      </Modal>
     </View>
   );
 }

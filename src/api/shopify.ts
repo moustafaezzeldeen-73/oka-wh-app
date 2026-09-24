@@ -1,4 +1,5 @@
 import { CONFIG, usingClientCredentials, usingProxy } from './config';
+import { photoIdsOf } from './model';
 import { ApiError, fetchJson } from './http';
 import { createTokenSource, ShopifyTokenError } from './shopifyToken';
 
@@ -140,6 +141,10 @@ export type ShopifyOrder = {
   } | null;
   lineItems: { nodes: ShopifyLineItem[] };
   metafield: { id: string; value: string } | null;
+  /** `oka.photos`: JSON list of Shopify File ids (list.file_reference). */
+  photos?: { value: string } | null;
+  /** `oka.delivery_cost`: what an in-house delivery cost, EGP. */
+  deliveryCost?: { value: string } | null;
 };
 
 const ORDER_FIELDS = `
@@ -173,6 +178,8 @@ const ORDER_FIELDS = `
     }
   }
   metafield(namespace: "oka", key: "activity_log") { id value }
+  photos: metafield(namespace: "oka", key: "photos") { value }
+  deliveryCost: metafield(namespace: "oka", key: "delivery_cost") { value }
 `;
 
 /**
@@ -432,4 +439,96 @@ export async function cancelShopifyOrder(orderId: string, reason = 'OTHER'): Pro
   if (errs.length) {
     throw new ApiError('shopify', 200, `orderCancel: ${errs.map((e) => e.message).join('; ')}`);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Photos on the order page, and in-house delivery
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Add a photo to the order's Warehouse photos field (read fresh, so nothing is lost). */
+export async function addOrderPhoto(orderId: string, fileId: string): Promise<void> {
+  const data = await shopifyGraphQL<{ order: { photos: { value: string } | null } | null }>(
+    `query PhotoValue($id: ID!) { order(id: $id) { photos: metafield(namespace: "oka", key: "photos") { value } } }`,
+    { id: orderId },
+  );
+  const ids = photoIdsOf({ photos: data.order?.photos ?? null });
+  if (ids.includes(fileId)) return;
+  await setOrderMetafield(orderId, 'photos', JSON.stringify([...ids, fileId]), 'list.file_reference');
+}
+
+/** Image URLs for Shopify File ids; ids still processing are left out. */
+export async function fileUrls(ids: string[]): Promise<Record<string, string>> {
+  if (ids.length === 0) return {};
+  const data = await shopifyGraphQL<{
+    nodes: ({ id: string; image?: { url: string } | null; url?: string | null } | null)[];
+  }>(
+    `query FileUrls($ids: [ID!]!) {
+       nodes(ids: $ids) {
+         ... on MediaImage { id image { url } }
+         ... on GenericFile { id url }
+       }
+     }`,
+    { ids },
+  );
+  const out: Record<string, string> = {};
+  for (const n of data.nodes ?? []) {
+    const url = n?.image?.url ?? n?.url;
+    if (n?.id && url) out[n.id] = url;
+  }
+  return out;
+}
+
+/** Record the balance as paid — used when an in-house courier hands the cash in. */
+export async function markOrderPaid(orderId: string): Promise<void> {
+  const data = await shopifyGraphQL<{
+    orderMarkAsPaid: { userErrors: { field?: string[] | null; message: string }[] };
+  }>(
+    `mutation MarkPaid($input: OrderMarkAsPaidInput!) {
+       orderMarkAsPaid(input: $input) {
+         order { id displayFinancialStatus }
+         userErrors { field message }
+       }
+     }`,
+    { input: { id: orderId } },
+  );
+  assertNoUserErrors(data.orderMarkAsPaid, 'orderMarkAsPaid');
+}
+
+/**
+ * Mark every open fulfillment order fulfilled, with "OKA In-house" as the
+ * carrier and no customer email. Needs the fulfillment-order permissions,
+ * which the app may not have — callers treat a failure as a note, not an error.
+ */
+export async function fulfillInHouse(orderId: string): Promise<number> {
+  const data = await shopifyGraphQL<{
+    order: { fulfillmentOrders: { nodes: { id: string; status: string }[] } } | null;
+  }>(
+    `query OpenFulfillmentOrders($id: ID!) {
+       order(id: $id) { fulfillmentOrders(first: 10) { nodes { id status } } }
+     }`,
+    { id: orderId },
+  );
+  const open = (data.order?.fulfillmentOrders.nodes ?? []).filter((f) =>
+    ['OPEN', 'IN_PROGRESS', 'SCHEDULED'].includes(f.status),
+  );
+  if (open.length === 0) return 0;
+  const res = await shopifyGraphQL<{
+    fulfillmentCreate: { userErrors: { field?: string[] | null; message: string }[] };
+  }>(
+    `mutation Fulfill($fulfillment: FulfillmentInput!) {
+       fulfillmentCreate(fulfillment: $fulfillment) {
+         fulfillment { id status }
+         userErrors { field message }
+       }
+     }`,
+    {
+      fulfillment: {
+        lineItemsByFulfillmentOrder: open.map((f) => ({ fulfillmentOrderId: f.id })),
+        notifyCustomer: false,
+        trackingInfo: { company: 'OKA In-house' },
+      },
+    },
+  );
+  assertNoUserErrors(res.fulfillmentCreate, 'fulfillmentCreate');
+  return open.length;
 }

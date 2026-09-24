@@ -1,5 +1,5 @@
-import type { Order } from '../api/model';
-import type { FilterKey } from '../i18n/strings';
+import { CARRIER_NAME, type CarrierKey, type Order } from '../api/model';
+import type { FilterKey, Strings } from '../i18n/strings';
 
 export type CallStatus = 'notcalled' | 'notanswered' | 'answered';
 
@@ -25,6 +25,7 @@ export function applyFilter(orders: Order[], key: FilterKey): Order[] {
       return orders.filter((o) => o.tags.some((t) => t.toLowerCase() === 'oka-ready'));
     case 'bosta':
     case 'jt':
+    case 'inhouse':
       return orders.filter((o) => o.carrier === key);
     case 'notcalled':
     case 'notanswered':
@@ -35,11 +36,34 @@ export function applyFilter(orders: Order[], key: FilterKey): Order[] {
   }
 }
 
-/** Photos attached to the order, newest last — read from the activity log. */
-export function orderPhotos(order: Order): { url: string; at: string }[] {
-  return order.activity
-    .filter((e) => e.kind === 'photo' && e.mediaUrl)
-    .map((e) => ({ url: e.mediaUrl as string, at: e.at }));
+export type OrderPhoto = {
+  /** Null while Shopify is still processing the upload. */
+  url: string | null;
+  at: string | null;
+  /** Shopify File id, when known. */
+  fileId: string | null;
+};
+
+/**
+ * Photos attached to the order, oldest first: every photo entry in the log,
+ * plus any file in the order's Warehouse photos field the log doesn't link.
+ */
+export function orderPhotos(order: Order): OrderPhoto[] {
+  const out: OrderPhoto[] = [];
+  const seen = new Set<string>();
+  for (const e of order.activity) {
+    if (e.kind !== 'photo') continue;
+    const fileId = typeof e.meta?.fileId === 'string' ? e.meta.fileId : null;
+    if (!e.mediaUrl && !fileId) continue;
+    const key = fileId ?? e.mediaUrl!;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ url: e.mediaUrl ?? null, at: e.at, fileId });
+  }
+  for (const id of order.photoIds) {
+    if (!seen.has(id)) out.push({ url: null, at: null, fileId: id });
+  }
+  return out;
 }
 
 /** Call + WhatsApp entries, newest first, for the contact-history list. */
@@ -48,4 +72,26 @@ export function contactHistory(order: Order) {
     .filter((e) => e.kind === 'call' || e.kind === 'whatsapp')
     .slice()
     .reverse();
+}
+
+/**
+ * Why a scanned order can't go on this truck, or null when it can. Courier
+ * trucks take only their own AWBs; the in-house truck takes anything not
+ * already booked with a courier.
+ */
+export function truckRefusal(
+  order: Order,
+  truck: CarrierKey,
+  L: Pick<Strings, 'wrongTruck' | 'noAwbForTruck' | 'inhouse'>,
+): string | null {
+  const truckName = truck === 'inhouse' ? L.inhouse : CARRIER_NAME[truck];
+  const courierBooked = order.carrier === 'jt' || order.carrier === 'bosta';
+  if (truck === 'inhouse' ? !courierBooked : order.carrier === truck) return null;
+  if (courierBooked || order.carrier === 'inhouse') {
+    return L.wrongTruck
+      .replace('{order}', order.name)
+      .replace('{carrier}', order.carrierName)
+      .replace('{truck}', truckName);
+  }
+  return L.noAwbForTruck.replace('{order}', order.name).replace('{truck}', truckName);
 }

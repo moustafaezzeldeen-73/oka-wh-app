@@ -280,9 +280,15 @@ function OrderRow({
   );
 }
 
-/** Which courier has the parcel — J&T in its red, Bosta in ink. */
+const CARRIER_TAG: Record<CarrierKey, { label: string; color: string; border: string }> = {
+  jt: { label: 'J&T', color: C.red, border: C.red },
+  bosta: { label: 'BOSTA', color: C.ink55, border: C.borderInput },
+  inhouse: { label: 'OKA', color: C.greenDeep, border: C.greenDeep },
+};
+
+/** Who carries the parcel — J&T in its red, Bosta in ink, OKA's own truck in green. */
 function CarrierTag({ carrier }: { carrier: CarrierKey }) {
-  const jt = carrier === 'jt';
+  const t = CARRIER_TAG[carrier];
   return (
     <View
       style={{
@@ -290,11 +296,11 @@ function CarrierTag({ carrier }: { carrier: CarrierKey }) {
         paddingVertical: 2,
         borderRadius: R.chip,
         borderWidth: 1,
-        borderColor: jt ? C.red : C.borderInput,
+        borderColor: t.border,
       }}
     >
-      <Mono f="monoMedium" size={10} color={jt ? C.red : C.ink55}>
-        {jt ? 'J&T' : 'BOSTA'}
+      <Mono f="monoMedium" size={10} color={t.color}>
+        {t.label}
       </Mono>
     </View>
   );

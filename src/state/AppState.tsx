@@ -13,8 +13,17 @@ import { processCall, type CallArgs } from '../api/callProcessing';
 import { cancelDelivery, updateDelivery, updateDeliveryCod } from '../api/bosta';
 import { isConfigured, missingConfig, missingCouriers } from '../api/config';
 import { buildPickInfo, cancelJtOrder, updateJtOrder } from '../api/jt';
-import { uploadToShopify } from '../api/media';
-import { itemsOf, shopifyCodOf, type Order, type OrderItem } from '../api/model';
+import { uploadFile } from '../api/media';
+import {
+  CARRIER_NAME,
+  TAG_DELIVERED,
+  TAG_INHOUSE,
+  itemsOf,
+  shopifyCodOf,
+  type CarrierKey,
+  type Order,
+  type OrderItem,
+} from '../api/model';
 import {
   fetchCatalog,
   loadOrders,
@@ -23,8 +32,12 @@ import {
   type CatalogProduct,
 } from '../api/repository';
 import {
+  addOrderPhoto,
   cancelShopifyOrder,
   fetchOrderById,
+  fulfillInHouse,
+  markOrderPaid,
+  setOrderMetafield,
   orderEditAddVariant,
   orderEditBegin,
   orderEditCommit,
@@ -32,6 +45,7 @@ import {
   updateOrderNoteAndTags,
 } from '../api/shopify';
 import { stringsFor, type Lang, type Strings } from '../i18n/strings';
+import { truckRefusal } from './selectors';
 
 export type Screen =
   | 'list'
@@ -44,7 +58,7 @@ export type Screen =
   | 'shipstatus'
   | 'shipdetail';
 
-export type Sheet = 'wa' | 'call' | 'photo' | null;
+export type Sheet = 'wa' | 'call' | 'photo' | 'deliver' | null;
 
 /** Draft quantity/addition edits held before they are committed to Shopify. */
 export type EditDraft = {
@@ -109,6 +123,12 @@ type Ctx = {
   setShipQuery: (q: string) => void;
 
   // pickup mode
+  /** Which truck is being loaded: a courier's pickup, or OKA's own delivery run. */
+  truckCarrier: CarrierKey;
+  setTruckCarrier: (c: CarrierKey) => void;
+  /** Check one scanned order belongs on this truck, then log (and for in-house, tag) it. */
+  loadOnTruck: (order: Order) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  resetScans: () => void;
   scanned: string[];
   beep: boolean;
   toggleBeep: () => void;
@@ -140,7 +160,10 @@ type Ctx = {
   syncCod: (order: Order) => Promise<void>;
   logCall: (order: Order, args: CallArgs) => Promise<void>;
   logWhatsApp: (order: Order, title: string, body: string, phone: string) => Promise<void>;
-  attachPhoto: (order: Order, uri: string) => Promise<void>;
+  /** Upload and attach; the result says why when it didn't save. */
+  attachPhoto: (order: Order, uri: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** In-house delivery done: records the cost, tags, logs, optionally marks paid. */
+  markDelivered: (order: Order, opts: { cost: number; cashCollected: boolean }) => Promise<boolean>;
   handleScan: (code: string) => Promise<Order | null>;
 };
 
@@ -171,6 +194,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [query, setQuery] = useState('');
   const [shipQuery, setShipQuery] = useState('');
   const [scanned, setScanned] = useState<string[]>([]);
+  const [truckCarrier, setTruckCarrier] = useState<CarrierKey>('jt');
   const [beep, setBeep] = useState(true);
   const [contactTarget, setContactTarget] = useState<'customer' | 'courier'>('customer');
   const [toast, setToast] = useState<string | null>(null);
@@ -280,6 +304,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setScanned((prev) => (prev.includes(shopifyId) ? prev : [...prev, shopifyId]));
   }, []);
   const undoScan = useCallback(() => setScanned((prev) => prev.slice(0, -1)), []);
+  const resetScans = useCallback(() => setScanned([]), []);
   const toggleBeep = useCallback(() => setBeep((b) => !b), []);
 
   // ── edit draft ─────────────────────────────────────────────────────────────
@@ -587,25 +612,110 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (order, uri) => {
       setBusy(L.photoUploading);
       try {
-        const url = await uploadToShopify(uri, 'image', {
+        const { fileId, url } = await uploadFile(uri, 'image', {
           orderName: order.name,
           label: 'contents',
         });
+        // The Warehouse photos field is what shows the image on the order page.
+        let fieldNote = '';
+        try {
+          await addOrderPhoto(order.shopifyId, fileId);
+        } catch (err) {
+          fieldNote = ` (not added to the Warehouse photos field: ${err instanceof Error ? err.message : 'unknown'})`;
+        }
         await logActivity(
           order.shopifyId,
           'photo',
-          url ? 'Photo of order contents attached' : 'Photo captured (upload still processing)',
-          { mediaUrl: url ?? undefined, meta: { awb: order.awb } },
+          (url ? 'Photo of order contents attached' : 'Photo of order contents attached (still processing)') +
+            fieldNote,
+          { mediaUrl: url ?? undefined, meta: { awb: order.awb, fileId } },
         );
         showToast(L.photoSaved);
         await refreshOne(order.shopifyId);
+        return { ok: true as const };
       } catch (err) {
-        showToast(`${L.saveFailed}: ${err instanceof Error ? err.message : ''}`.trim());
+        const error = err instanceof Error ? err.message : String(err);
+        showToast(`${L.photoFailed}: ${error}`);
+        return { ok: false as const, error };
       } finally {
         setBusy(null);
       }
     },
     [L, refreshOne, showToast],
+  );
+
+  const markDelivered = useCallback<Ctx['markDelivered']>(
+    async (order, { cost, cashCollected }) => {
+      setBusy(L.syncing);
+      try {
+        const notes: string[] = [];
+        await setOrderMetafield(order.shopifyId, 'delivery_cost', String(cost), 'number_decimal');
+        const tags = Array.from(new Set([...order.tags, TAG_INHOUSE, TAG_DELIVERED]));
+        await updateOrderNoteAndTags(order.shopifyId, null, tags);
+        if (cashCollected) {
+          try {
+            await markOrderPaid(order.shopifyId);
+            notes.push(`cash ${Math.round(order.cod)} EGP collected, marked paid`);
+          } catch (err) {
+            notes.push(`could not mark paid: ${err instanceof Error ? err.message : 'unknown'}`);
+          }
+        }
+        // Fulfilling needs fulfillment-order permissions the app may not have;
+        // the delivery is recorded either way.
+        try {
+          const n = await fulfillInHouse(order.shopifyId);
+          if (n > 0) notes.push('marked fulfilled in Shopify');
+        } catch (err) {
+          notes.push(`not marked fulfilled in Shopify: ${err instanceof Error ? err.message : 'unknown'}`);
+        }
+        await logActivity(
+          order.shopifyId,
+          'status',
+          `Delivered by in-house courier — delivery cost ${cost} EGP${notes.length ? ` (${notes.join('; ')})` : ''}`,
+          { meta: { carrier: 'inhouse', delivered: true, deliveryCost: cost, cashCollected } },
+        );
+        showToast(L.markedDelivered);
+        await refreshOne(order.shopifyId);
+        return true;
+      } catch (err) {
+        showToast(`${L.saveFailed}: ${err instanceof Error ? err.message : ''}`.trim());
+        return false;
+      } finally {
+        setBusy(null);
+      }
+    },
+    [L, refreshOne, showToast],
+  );
+
+  const loadOnTruck = useCallback<Ctx['loadOnTruck']>(
+    async (order) => {
+      const truck = truckCarrier;
+      const reason = truckRefusal(order, truck, L);
+      if (reason) return { ok: false, reason };
+
+      // Logged without blocking the next scan; in-house also tags the order so
+      // it shows as out for delivery.
+      void (async () => {
+        try {
+          if (truck === 'inhouse' && !order.tags.some((t) => t.toLowerCase() === TAG_INHOUSE)) {
+            await updateOrderNoteAndTags(order.shopifyId, null, [...order.tags, TAG_INHOUSE]);
+          }
+          await logActivity(
+            order.shopifyId,
+            'scan',
+            truck === 'inhouse'
+              ? 'Loaded on the in-house delivery truck — out for delivery'
+              : `Loaded on the ${CARRIER_NAME[truck]} truck (pickup scan)`,
+            { meta: { awb: order.awb, carrier: truck } },
+          );
+          if (truck === 'inhouse') await refreshOne(order.shopifyId);
+        } catch (err) {
+          showToast(`${L.saveFailed}: ${err instanceof Error ? err.message : ''}`.trim());
+        }
+      })();
+      return { ok: true };
+    },
+    [L, refreshOne, showToast, truckCarrier],
   );
 
   const handleScan = useCallback<Ctx['handleScan']>(
@@ -659,6 +769,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setQuery,
       shipQuery,
       setShipQuery,
+      truckCarrier,
+      setTruckCarrier,
+      loadOnTruck,
+      resetScans,
       scanned,
       beep,
       toggleBeep,
@@ -682,6 +796,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       logCall,
       logWhatsApp,
       attachPhoto,
+      markDelivered,
       handleScan,
     }),
     [
@@ -707,6 +822,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       filter,
       query,
       shipQuery,
+      truckCarrier,
+      setTruckCarrier,
+      loadOnTruck,
+      resetScans,
       scanned,
       beep,
       toggleBeep,
@@ -729,6 +848,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       logCall,
       logWhatsApp,
       attachPhoto,
+      markDelivered,
       handleScan,
     ],
   );

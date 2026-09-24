@@ -22,6 +22,7 @@ import { ModesScreen } from './src/screens/ModesScreen';
 import { OrderDetailScreen } from './src/screens/OrderDetailScreen';
 import { OrdersListScreen, Loading } from './src/screens/OrdersListScreen';
 import { PhotoSheet } from './src/screens/PhotoSheet';
+import { DeliverSheet } from './src/screens/DeliverSheet';
 import { PickupScreen } from './src/screens/PickupScreen';
 import { ScanScreen } from './src/screens/ScanScreen';
 import { ShipDetailScreen } from './src/screens/ShipDetailScreen';
@@ -63,7 +64,9 @@ export default function App() {
   );
 }
 
-const TAB_SCREENS = ['list', 'detail', 'edit', 'modes'] as const;
+// Order detail and edit keep their own action bar at the bottom, which the
+// tab bar would cover, so only the top-level screens get it.
+const TAB_SCREENS = ['list', 'modes'] as const;
 
 function Shell() {
   const { screen, sheet, selected, ar, toast, busy, L, loading } = useApp();
@@ -108,6 +111,7 @@ function Shell() {
         {sheet === 'wa' && selected ? <WaSheet order={selected} /> : null}
         {sheet === 'call' && selected ? <CallSheet order={selected} /> : null}
         {sheet === 'photo' && selected ? <PhotoSheet order={selected} /> : null}
+        {sheet === 'deliver' && selected ? <DeliverSheet order={selected} /> : null}
       </View>
 
       {busy ? <BusyBar message={busy} top={insets.top + 12} /> : null}
