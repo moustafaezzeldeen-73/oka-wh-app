@@ -60,7 +60,7 @@ async function call<T>(path: string, bizContent: Record<string, unknown>, withAu
   if (path === '/api/order/getOrders' && isEmptyLookupError(res?.code, res?.msg)) {
     return [] as unknown as T;
   }
-  if (res?.code !== '1') {
+  if (String(res?.code) !== '1') {
     throw new ApiError('jt', 200, `J&T ${res?.code ?? '?'}: ${res?.msg ?? 'unknown error'}`);
   }
   return res.data as T;

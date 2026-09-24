@@ -1150,6 +1150,7 @@ section('J&T updates resubmit the whole order');
     isEmptyLookupError('999001030', '参数无效:waybillNos size must be between 1 and 1000;'),
     true,
   );
+  eq('…also when J&T sends the code as a number', isEmptyLookupError(999001030, 'waybillNos size must be between 1 and 1000'), true);
   eq('other J&T errors still count as errors', isEmptyLookupError('999001030', 'digest is invalid'), false);
 }
 

@@ -93,7 +93,7 @@ export type JtShipment = {
   dispatches: number | null;
 };
 
-export type JtEnvelope<T> = { code?: string; msg?: string; data?: T };
+export type JtEnvelope<T> = { code?: string | number; msg?: string; data?: T };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Request signing
@@ -536,8 +536,9 @@ export function updatePayload(
  * empty list — 999001030 "参数无效:waybillNos size must be between 1 and 1000"
  * (seen live on 2026-09-24). It means "no such parcels", not a bad request.
  */
-export function isEmptyLookupError(code: string | undefined, msg: string | undefined): boolean {
-  return code === '999001030' && /waybillNos size/i.test(msg ?? '');
+export function isEmptyLookupError(code: string | number | undefined, msg: string | undefined): boolean {
+  // Success comes back as the string "1"; error codes can arrive as numbers.
+  return String(code) === '999001030' && /waybillNos size/i.test(msg ?? '');
 }
 
 export function cancelPayload(order: JtOrder, reason: string): Record<string, unknown> {
