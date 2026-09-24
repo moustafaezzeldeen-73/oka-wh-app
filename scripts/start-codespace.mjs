@@ -66,6 +66,7 @@ async function announceWhenReachable() {
   for (let i = 0; i < 200 && !exited; i++) {
     if (await reachable()) {
       printConnectInfo();
+      void keepReachable();
       return;
     }
     if (!warned && i >= 3) {
@@ -87,6 +88,35 @@ async function announceWhenReachable() {
   }
   if (!exited) {
     console.log(yellow(`\n${publicUrl} never answered. Restart with: npm run start:codespace -- --tunnel\n`));
+  }
+}
+
+/**
+ * GitHub can drop the port back to private (it does when a Codespace
+ * restarts), and Expo Go then gets a bare 404. Check every 30 s and put the
+ * port back, so a working QR code stays working.
+ */
+async function keepReachable() {
+  let down = false;
+  while (!exited) {
+    await delay(30_000);
+    if (exited) return;
+    if (await reachable()) {
+      if (down) console.log(green(`\n${publicUrl} answers again — reload the app in Expo Go.\n`));
+      down = false;
+      continue;
+    }
+    if (!down) {
+      down = true;
+      console.log(
+        yellow(
+          bold(`\n${publicUrl} stopped answering`) +
+            ` — Expo Go will show a 404. Making port ${PORT} public again…` +
+            `\n  If this repeats: PORTS tab → right-click ${PORT} → Port Visibility → Public.\n`,
+        ),
+      );
+    }
+    await makePortPublic();
   }
 }
 
@@ -135,7 +165,8 @@ function printConnectInfo() {
       green(bold('Ready for Expo Go.')),
       `  Scan the QR code above with the iPhone Camera, or open this address on the phone:`,
       `  ${bold(expoGoUrl)}`,
-      `  (Ignore any exp://…:443 address Expo prints — use this one.)`,
+      `  (Ignore any exp://…:443 address Expo prints — use this one, not Expo Go's recent list.)`,
+      `  Phone check: ${publicUrl}/status in Safari should say packager-status:running`,
       '',
     ].join('\n'),
   );
