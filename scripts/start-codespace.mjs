@@ -12,8 +12,9 @@
  * Outside a Codespace, or with `npm run start:codespace -- --tunnel`, it runs
  * the ngrok tunnel instead.
  */
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import net from 'node:net';
 import path from 'node:path';
 
 const PORT = 8081;
@@ -44,6 +45,40 @@ if (!useTunnel) {
 const expoArgs = useTunnel
   ? ['expo', 'start', ...(args.includes('--tunnel') ? [] : ['--tunnel']), ...args]
   : ['expo', 'start', '--port', String(PORT), ...args];
+
+/** Whether something already listens on the port inside the Codespace. */
+function portTaken(port) {
+  return new Promise((resolve) => {
+    const sock = net.createConnection({ host: '127.0.0.1', port });
+    sock.once('connect', () => {
+      sock.destroy();
+      resolve(true);
+    });
+    sock.once('error', () => resolve(false));
+  });
+}
+
+// An app server left over from an earlier run (another terminal, or one that
+// didn't shut down) keeps port 8081; the new one would then move to 8082 and
+// GitHub's address would answer 502. Stop the old one first.
+if (!useTunnel && (await portTaken(PORT))) {
+  console.log(yellow(`Port ${PORT} is held by an older app server — stopping it first.`));
+  try {
+    execFileSync('pkill', ['-f', 'node .*expo start'], { stdio: 'ignore' });
+  } catch {
+    // Nothing matched, or pkill is missing; the check below says if it's still taken.
+  }
+  for (let i = 0; i < 20 && (await portTaken(PORT)); i++) await delay(500);
+  if (await portTaken(PORT)) {
+    console.log(
+      yellow(
+        `Port ${PORT} is still in use by another program. Close the other terminal running the app, ` +
+          `or run: pkill -f "expo start"`,
+      ),
+    );
+    process.exit(1);
+  }
+}
 
 const child = spawn('npx', expoArgs, { stdio: 'inherit', env });
 let exited = false;
