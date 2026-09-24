@@ -118,26 +118,21 @@ npm run verify            # confirm credentials, scopes and the courier joins
 npx expo start --tunnel   # then scan the QR code with Expo Go (Android or iPhone)
 ```
 
-In a GitHub Codespace use `npm run start:codespace` instead. It prints a QR
-code only once the address behind it really answers:
+In a GitHub Codespace use `npm run start:codespace` instead. It serves the
+app through **Expo's tunnel** (ngrok) — the route that works reliably from
+OKA's Codespace — and prints the QR code (`exp://….exp.direct`) only once the
+tunnel answers and the iPhone and Android bundles are built, so the phone never
+waits on a first build (a slow first build is what made Expo Go show 502s).
+`@expo/ngrok` is a dev dependency, so there is nothing to install mid-run. It
+also stops a leftover app server still holding port 8081 from an earlier run.
 
-1. **GitHub's forwarded address first.** Metro starts on port 8081 with every
-   Expo URL pointing at `https://<codespace>-8081.app.github.dev`, the port is
-   made public (Expo Go can't sign in to GitHub), and the QR code
-   (`exps://…`) appears when that address answers from outside. The script
-   keeps checking it and puts the port back to public if GitHub drops it.
-2. **Expo's tunnel if that fails.** GitHub's address can answer 404 or 502
-   after a Codespace restart. If it still isn't working after 45 s, the
-   script restarts Metro with Expo's ngrok tunnel (`@expo/ngrok` is a dev
-   dependency, so there is nothing to install) and prints that QR code
-   (`exp://….exp.direct`) once the tunnel answers.
-
-It also stops a leftover app server still holding port 8081 from an earlier
-run. `npm run start:codespace -- --tunnel` skips straight to the tunnel.
-Expo runs headless (`EXPO_UNSTABLE_HEADLESS=1`), which stops React Native from
-preparing its desktop DevTools window — that needs GUI libraries a Codespace
-doesn't have (`libatk-1.0.so.0`). In that mode Expo prints no QR code or
-keyboard shortcuts of its own; the script prints the QR code.
+`npm run start:codespace -- --github` tries GitHub's forwarded address first
+(`https://<codespace>-8081.app.github.dev`, made public) and falls back to the
+tunnel after 45 s. Expo runs headless (`EXPO_UNSTABLE_HEADLESS=1`), which stops
+React Native from preparing its desktop DevTools window — that needs GUI
+libraries a Codespace doesn't have (`libatk-1.0.so.0`). In that mode Expo
+prints no QR code or keyboard shortcuts of its own; the script prints the QR
+code.
 
 `npm run verify -- --write` additionally writes one log entry to a real order so
 you can confirm the timeline entry appears in Shopify admin.

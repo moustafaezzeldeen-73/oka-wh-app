@@ -3,19 +3,16 @@
  * `npm run start:codespace` — serve the app to Expo Go from a GitHub Codespace
  * and print a QR code that works.
  *
- *   1. GitHub's forwarded address (preferred: no third party). Metro starts on
- *      port 8081 with every Expo URL pointing at
- *      https://<codespace>-8081.app.github.dev, the port is made public
- *      (Expo Go can't sign in to GitHub), and the QR code is printed once that
- *      address answers from outside.
- *   2. Expo's tunnel (ngrok), automatically, if GitHub's address still doesn't
- *      answer after 45 s — it can refuse with 404/502 after a Codespace restart.
- *      The QR code is printed once the tunnel answers.
+ * Uses Expo's tunnel (ngrok) — the route that works reliably from OKA's
+ * Codespace. The QR code (`exp://….exp.direct`) is printed only once the tunnel
+ * answers and the iPhone and Android bundles are built, so the phone never
+ * waits on a first build.
  *
- * `-- --tunnel` goes straight to the tunnel, as does running it outside a
- * Codespace. Expo runs headless here (no desktop DevTools window, which needs
- * GUI libraries a Codespace lacks), and in that mode Expo prints no QR code of
- * its own — this script prints it.
+ * `-- --github` tries GitHub's forwarded address first instead
+ * (https://<codespace>-8081.app.github.dev, made public), falling back to the
+ * tunnel after 45 s. Expo runs headless (no desktop DevTools window, which
+ * needs GUI libraries a Codespace lacks), and in that mode Expo prints no QR
+ * code of its own — this script prints it.
  */
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -26,8 +23,8 @@ const PORT = 8081;
 const GITHUB_WAIT_MS = 45_000;
 const TUNNEL_WAIT_MS = 120_000;
 
-const forceTunnel = process.argv.includes('--tunnel');
-const passthrough = process.argv.slice(2).filter((a) => a !== '--tunnel');
+const tryGithub = process.argv.includes('--github');
+const passthrough = process.argv.slice(2).filter((a) => a !== '--tunnel' && a !== '--github');
 const codespace = process.env.CODESPACE_NAME;
 
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
@@ -240,7 +237,7 @@ async function keepGithubReachable() {
       console.log(
         yellow(
           `\n${bold(`${publicUrl} stopped answering`)} — Expo Go will show an error.\n  ${githubAdvice(p.status)}\n` +
-            `  Or restart with: npm run start:codespace -- --tunnel\n`,
+            `  Or restart without --github to use Expo's tunnel: npm run start:codespace\n`,
         ),
       );
     }
@@ -327,7 +324,7 @@ function printQr(url) {
 // ── Run ──────────────────────────────────────────────────────────────────────
 
 await freePort();
-if (codespace && !forceTunnel) {
+if (codespace && tryGithub) {
   // True means GitHub's address works and is being watched; if Expo itself
   // quit, its exit already ended this script.
   if (!(await runGithub())) {
