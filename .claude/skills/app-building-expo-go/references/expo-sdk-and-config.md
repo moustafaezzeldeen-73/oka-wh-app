@@ -1,18 +1,13 @@
 # Expo SDK, config, secrets and device features
 
-## Upgrading the SDK (e.g. 54 → 57) for Expo Go
-- Expo Go only runs the latest SDK, so an old project must be upgraded.
-- If `npx expo install` can't reach `api.expo.dev` (sandboxed networks), take
-  compatible versions from `node_modules/expo/bundledNativeModules.json` after
-  installing the new `expo` and pin those.
-- Breakages met on the way to SDK 57 / RN 0.86 / TS 6:
-  - TypeScript 6 deprecates `baseUrl` (remove it and path aliases) and
-    `moduleResolution: node10` (use `node16` for Node-side test builds).
-  - `newArchEnabled` is gone from the app config schema.
-  - `expo-asset` became a required peer (expo-doctor flags it).
-  - expo-audio renamed background flags; check each plugin's options.
-- Verify with `npx expo-doctor`, `tsc --noEmit`, the test suite and
-  `npx expo export --platform all` (delete the output: it embeds secrets).
+## Upgrading the SDK for Expo Go
+Exact working versions, copy-ready config files, the 54 → 57 upgrade steps
+and every breakage met are in [expo-go-sdk-build.md](expo-go-sdk-build.md).
+The short version: Expo Go only runs the latest SDK; when `npx expo install`
+can't reach `api.expo.dev`, take versions from
+`node_modules/expo/bundledNativeModules.json`; verify with `tsc`,
+`expo-doctor` and `expo export --platform all` (then delete the output — it
+embeds secrets).
 
 ## Config and `.env`
 - `app.config.js` reads `process.env` and passes values through `extra`;

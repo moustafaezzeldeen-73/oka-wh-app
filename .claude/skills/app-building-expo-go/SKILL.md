@@ -1,6 +1,6 @@
 ---
 name: app-building-expo-go
-description: Hard-won playbook for building, running and testing React Native / Expo apps in Expo Go — especially from a cloud dev environment (GitHub Codespaces, a remote container, a Claude cloud sandbox) onto a real iPhone or Android phone — and for wiring such apps to live Shopify Admin and courier APIs (J&T Express Egypt, Bosta). Use it whenever someone builds or upgrades an Expo / React Native app, runs `expo start`, tests on Expo Go, asks "how do I run the app", reports that no QR code appears, Expo Go shows HTTP 404 or 502, a blank screen, a libatk / DevTools error, a keyboard covering an input, a button hidden under the tab bar, photos or uploads not saving, or integrates Shopify orders, metafields, files or courier AWBs/COD into a mobile app — even if they don't mention Expo Go by name.
+description: Hard-won playbook for building, running and testing React Native / Expo apps in Expo Go — especially from a cloud dev environment (GitHub Codespaces, a remote container, a Claude cloud sandbox) onto a real iPhone or Android phone — and for wiring such apps to live Shopify Admin and courier APIs (J&T Express Egypt, Bosta). Includes the known-good Expo Go SDK 57 build (exact package versions, app.config.js, tsconfig, upgrade steps from older SDKs). Use it whenever someone builds, scaffolds or upgrades an Expo / React Native app, hits "Project is incompatible with this version of Expo Go", runs `expo start`, tests on Expo Go, asks "how do I run the app", reports that no QR code appears, Expo Go shows HTTP 404 or 502, a blank screen, a libatk / DevTools error, a keyboard covering an input, a button hidden under the tab bar, photos or uploads not saving, or integrates Shopify orders, metafields, files or courier AWBs/COD into a mobile app — even if they don't mention Expo Go by name.
 ---
 
 # Building apps for Expo Go — the playbook
@@ -12,6 +12,7 @@ the task; the reference files hold the detail.
 
 | Situation | Read |
 | --- | --- |
+| Starting a new Expo Go app, checking/upgrading the SDK, exact working versions and config files | [references/expo-go-sdk-build.md](references/expo-go-sdk-build.md) |
 | Getting the app onto a phone from a Codespace / remote box; any Expo Go error | [references/running-expo-go.md](references/running-expo-go.md) and `scripts/start-codespace.mjs` |
 | Screens, keyboard, tab bars, uploads that "look saved", fonts, RTL | [references/rn-ui-pitfalls.md](references/rn-ui-pitfalls.md) |
 | Shopify Admin API: auth, orders, metafields, files, fulfilment, COD | [references/shopify.md](references/shopify.md) |
