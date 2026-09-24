@@ -18,6 +18,7 @@ import {
   jtParcel,
   money,
   normalizePhone,
+  packageDescription,
   parcelFromShopify,
   photoIdsOf,
   pickParcel,
@@ -1216,6 +1217,20 @@ section('In-house delivery');
   eq('a courier parcel wins over the in-house tag', booked.carrier, 'jt');
 }
 
+section('AWB contents after an edit');
+{
+  eq(
+    'contents line lists what is in the box',
+    packageDescription([
+      { title: 'OKA Carbon Black', quantity: 1 },
+      { title: 'Tongs', quantity: 2 },
+      { title: 'Removed line', quantity: 0 },
+    ]),
+    'OKA Carbon Black x1; Tongs x2',
+  );
+  eq('long lists are cut to fit', packageDescription([{ title: 'x'.repeat(400), quantity: 1 }]).length, 250);
+}
+
 section('Truck loading');
 {
   const L = stringsFor('en');
@@ -1229,8 +1244,22 @@ section('Truck loading');
   eq('unbooked order refused on a courier truck', truckRefusal(plain, 'bosta', L), '#2623621 has no Bosta AWB');
   eq('unbooked order on the in-house truck', truckRefusal(plain, 'inhouse', L), null);
   eq('in-house order reloaded on the in-house truck', truckRefusal(inhouse, 'inhouse', L), null);
-  eq('rerouted courier parcel accepted on the in-house truck', truckRefusal(jtOrder, 'inhouse', L), null);
-  eq('Bosta parcel accepted on the in-house truck too', truckRefusal(bostaOrder, 'inhouse', L), null);
+  eq('J&T parcel not yet picked up → rerouted onto the in-house truck', truckRefusal(jtOrder, 'inhouse', L), null);
+  eq('Bosta parcel not yet picked up → accepted too', truckRefusal(bostaOrder, 'inhouse', L), null);
+  const jtPicked = buildOrder(SHOPIFY_ORDER, jtParcel({ ...JT_FAILED, order: JT_ORDER }), [], false);
+  eq(
+    'J&T parcel already picked up → refused',
+    truckRefusal(jtPicked, 'inhouse', L),
+    "#2623621 was already picked up by J&T Express — it can't go on the in-house truck",
+  );
+  const bostaPicked = buildOrder(SHOPIFY_ORDER, bostaParcel(BOSTA_WITH_COURIER), [], false);
+  eq('Bosta parcel already picked up → refused', truckRefusal(bostaPicked, 'inhouse', L)?.startsWith('#2623621 was already picked up by Bosta'), true);
+  const jtUnread = buildOrder(SHOPIFY_ORDER, { carrier: 'jt', awb: 'JEG000534521595', shipment: null }, [], false);
+  eq(
+    "courier status unknown → refused rather than guessed",
+    truckRefusal(jtUnread, 'inhouse', L),
+    "Couldn't check with J&T Express whether #2623621 was picked up — try again",
+  );
   eq('courier parcel on the in-house truck counts as rerouted', [isRerouted(jtOrder, 'inhouse'), isRerouted(bostaOrder, 'inhouse')], [true, true]);
   eq('not rerouted: in-house order, or a courier truck', [isRerouted(inhouse, 'inhouse'), isRerouted(plain, 'inhouse'), isRerouted(jtOrder, 'jt')], [false, false, false]);
   eq('in-house order refused on a courier truck', truckRefusal(inhouse, 'jt', L), '#2623621 is booked with In-house delivery, not J&T Express');

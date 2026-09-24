@@ -71,7 +71,7 @@ export default function App() {
 const TAB_SCREENS = ['list', 'modes'] as const;
 
 function Shell() {
-  const { screen, sheet, selected, ar, toast, busy, L, loading } = useApp();
+  const { screen, sheet, selected, ar, toast, busy, L, loading, truckCarrier } = useApp();
   const insets = useSafeAreaInsets();
 
   const showTabs = (TAB_SCREENS as readonly string[]).includes(screen) && sheet === null;
@@ -81,7 +81,15 @@ function Shell() {
     <View
       style={{
         flex: 1,
-        backgroundColor: darkScreen ? C.dark : C.bg,
+        // Truck loading paints the status-bar strip too: blue for in-house, green for couriers.
+        backgroundColor:
+          screen === 'pickup'
+            ? truckCarrier === 'inhouse'
+              ? C.blue
+              : C.greenDeep
+            : darkScreen
+              ? C.dark
+              : C.bg,
         paddingTop: insets.top,
       }}
     >

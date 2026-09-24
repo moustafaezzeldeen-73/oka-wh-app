@@ -44,6 +44,9 @@ export function PickupScreen() {
   const cooling = useRef(false);
 
   const truckLabel = (c: CarrierKey) => (c === 'inhouse' ? L.inhouse : CARRIER_NAME[c]);
+  // Blue for OKA's own delivery run, green for courier pickups.
+  const inhouse = truckCarrier === 'inhouse';
+  const accent = inhouse ? C.blue : C.greenDeep;
 
   const chooseTruck = (c: CarrierKey) => {
     if (c === truckCarrier) return;
@@ -130,7 +133,7 @@ export function PickupScreen() {
       style={{
         flex: 1,
         minHeight: 0,
-        backgroundColor: flash ? C.greenFlash : refused ? C.red : C.greenDeep,
+        backgroundColor: flash ? (inhouse ? C.blueFlash : C.greenFlash) : refused ? C.red : accent,
       }}
     >
       <View
@@ -191,7 +194,7 @@ export function PickupScreen() {
                   justifyContent: 'center',
                 }}
               >
-                <Txt f="sansSemi" size={14} color={on ? C.greenDeep : C.white}>
+                <Txt f="sansSemi" size={14} color={on ? accent : C.white}>
                   {truckLabel(c)}
                 </Txt>
               </Pressable>
@@ -277,7 +280,7 @@ export function PickupScreen() {
               justifyContent: 'center',
             }}
           >
-            <Txt f="sansSemi" size={14} color={C.greenDeep}>
+            <Txt f="sansSemi" size={14} color={accent}>
               {L.add}
             </Txt>
           </Pressable>
@@ -303,7 +306,7 @@ export function PickupScreen() {
               paddingVertical: 11,
               paddingHorizontal: 13,
               borderRadius: R.card,
-              backgroundColor: i === 0 ? '#E8F3EC' : C.bg,
+              backgroundColor: i === 0 ? (inhouse ? C.blueTint : '#E8F3EC') : C.bg,
             }}
           >
             <View
@@ -311,7 +314,7 @@ export function PickupScreen() {
                 width: 30,
                 height: 30,
                 borderRadius: R.pill,
-                backgroundColor: C.greenDeep,
+                backgroundColor: accent,
                 alignItems: 'center',
                 justifyContent: 'center',
               }}

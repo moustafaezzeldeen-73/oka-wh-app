@@ -145,6 +145,8 @@ export const AR = {
   tapToRetry: 'اضغط على الصورة عشان تحاول تاني',
   photoProcessing: 'بتتجهز',
   reroutedNote: 'اتحوّل للتوصيل الداخلي بنفس البوليصة — اتكتبت ملاحظة على {order}',
+  pickedUpByCourier: '{order} اتسلم لـ {carrier} خلاص — مينفعش يتحمل على التوصيل الداخلي',
+  courierUnknown: 'مقدرناش نتأكد من {carrier} إن {order} لسه ماتسلمش — جرّب تاني',
 } as const;
 
 export const EN: Record<keyof typeof AR, string> = {
@@ -287,6 +289,8 @@ export const EN: Record<keyof typeof AR, string> = {
   tapToRetry: 'Tap the photo to try again',
   photoProcessing: 'processing',
   reroutedNote: 'Rerouted to in-house with its AWB — note added to {order}',
+  pickedUpByCourier: "{order} was already picked up by {carrier} — it can't go on the in-house truck",
+  courierUnknown: "Couldn't check with {carrier} whether {order} was picked up — try again",
 };
 
 export type Strings = typeof AR;

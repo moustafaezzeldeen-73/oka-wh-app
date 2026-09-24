@@ -76,16 +76,26 @@ export function contactHistory(order: Order) {
 
 /**
  * Why a scanned order can't go on this truck, or null when it can. Courier
- * trucks take only their own AWBs. The in-house truck takes everything —
- * including parcels booked with J&T or Bosta, which are sometimes rerouted to
- * OKA's own delivery under the same AWB (see `isRerouted`).
+ * trucks take only their own AWBs. The in-house truck takes orders without a
+ * courier, and J&T or Bosta parcels rerouted to OKA's own delivery under the
+ * same AWB (see `isRerouted`) — but only while that courier hasn't picked the
+ * parcel up. When the courier's status couldn't be read, it refuses rather
+ * than guess.
  */
 export function truckRefusal(
   order: Order,
   truck: CarrierKey,
-  L: Pick<Strings, 'wrongTruck' | 'noAwbForTruck' | 'inhouse'>,
+  L: Pick<Strings, 'wrongTruck' | 'noAwbForTruck' | 'inhouse' | 'pickedUpByCourier' | 'courierUnknown'>,
 ): string | null {
-  if (truck === 'inhouse' || order.carrier === truck) return null;
+  if (truck === 'inhouse') {
+    if (order.carrier !== 'jt' && order.carrier !== 'bosta') return null;
+    const fill = (t: string) => t.replace('{order}', order.name).replace('{carrier}', order.carrierName);
+    const known = order.carrier === 'jt' ? order.jtOrder !== null : order.bostaId !== null;
+    if (!known) return fill(L.courierUnknown);
+    if (order.locked || order.trackPhase >= 1) return fill(L.pickedUpByCourier);
+    return null;
+  }
+  if (order.carrier === truck) return null;
   const truckName = CARRIER_NAME[truck];
   if (order.carrier) {
     return L.wrongTruck

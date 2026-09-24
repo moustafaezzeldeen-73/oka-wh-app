@@ -10,7 +10,7 @@ import React, {
 
 import { logActivity, makeEntry, appendActivity } from '../api/activity';
 import { processCall, type CallArgs } from '../api/callProcessing';
-import { cancelDelivery, updateDelivery, updateDeliveryCod } from '../api/bosta';
+import { cancelDelivery, getDeliveryByTracking, updateDelivery, updateDeliveryCod } from '../api/bosta';
 import { isConfigured, missingConfig, missingCouriers } from '../api/config';
 import { buildPickInfo, cancelJtOrder, updateJtOrder } from '../api/jt';
 import { uploadFile } from '../api/media';
@@ -19,6 +19,7 @@ import {
   TAG_DELIVERED,
   TAG_INHOUSE,
   itemsOf,
+  packageDescription,
   shopifyCodOf,
   type CarrierKey,
   type Order,
@@ -469,10 +470,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const itemsEdited = changedQty.length > 0 || draft.additions.length > 0;
         let cod = Math.round(order.cod);
         let items: OrderItem[] = order.items;
+        let shipping = order.shipping;
         if (itemsEdited) {
           const fresh = await fetchOrderById(order.shopifyId).catch(() => null);
           cod = Math.round(fresh ? shopifyCodOf(fresh) : draftTotals(order).cod);
-          if (fresh) items = itemsOf(fresh);
+          if (fresh) {
+            items = itemsOf(fresh);
+            // The fee can change with the edit (e.g. crossing a free-shipping tier).
+            const fee = parseFloat(fresh.totalShippingPriceSet?.shopMoney?.amount ?? '');
+            if (Number.isFinite(fee)) shipping = fee;
+          }
         }
         const codChanged = cod !== Math.round(order.cod);
         const refused = (what: string, err: unknown) =>
@@ -481,12 +488,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           );
 
         if (order.bostaId) {
-          if (codChanged) {
+          if (codChanged || itemsEdited) {
+            // One update carries both the COD and the AWB's contents line, so
+            // the label matches the box. Specs are resent whole (read fresh) in
+            // case Bosta replaces the object rather than merging it.
+            const payload: Record<string, unknown> = {};
+            if (codChanged) payload.cod = cod;
+            if (itemsEdited) {
+              const current = order.awb ? await getDeliveryByTracking(order.awb).catch(() => null) : null;
+              const specs = current?.specs ?? {};
+              payload.specs = {
+                ...specs,
+                packageDetails: {
+                  ...(specs.packageDetails ?? {}),
+                  itemsCount: items.reduce((n, i) => n + i.quantity, 0),
+                  description: packageDescription(items),
+                },
+              };
+            }
             try {
-              await updateDeliveryCod(order.bostaId, cod);
-              summary.push(`COD ${Math.round(order.cod)} → ${cod} EGP`);
+              await updateDelivery(order.bostaId, payload);
+              if (codChanged) summary.push(`COD ${Math.round(order.cod)} → ${cod} EGP`);
+              if (itemsEdited) summary.push('Bosta AWB contents updated');
             } catch (err) {
-              refused('COD', err);
+              if (itemsEdited && codChanged) {
+                // Keep the money right even if Bosta won't take the contents change.
+                try {
+                  await updateDeliveryCod(order.bostaId, cod);
+                  summary.push(`COD ${Math.round(order.cod)} → ${cod} EGP`);
+                  refused('AWB contents', err);
+                } catch (err2) {
+                  refused('COD', err2);
+                }
+              } else {
+                refused(codChanged ? 'COD' : 'AWB contents', err);
+              }
             }
           }
           if (addressChanged && draft.address) {
@@ -506,7 +542,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             await updateJtOrder(order.jtOrder, order.name, {
               cod,
               street: addressChanged && draft.address ? draft.address : undefined,
-              pickInfo: jtPickInfo(items, order.shipping, cod),
+              pickInfo: jtPickInfo(items, shipping, cod),
             });
             if (codChanged) summary.push(`COD ${Math.round(order.cod)} → ${cod} EGP`);
             if (addressChanged && draft.address) summary.push(`Address → ${draft.address}`);
@@ -514,7 +550,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           } catch (err) {
             refused(addressChanged && !codChanged ? 'Address' : 'COD', err);
           }
-        } else if (order.awb && (codChanged || addressChanged)) {
+        } else if (order.awb && (codChanged || itemsEdited || addressChanged)) {
           summary.push(`${order.carrierName} not updated — shipment ${order.awb} could not be loaded`);
         }
 
@@ -528,7 +564,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         await appendActivity(order.shopifyId, entries);
 
-        showToast(L.saved);
+        // A courier that refused the change must not look like a clean save.
+        showToast(summary.find((l) => /refused|not updated/.test(l)) ?? L.saved);
         resetDraft();
         await refreshOne(order.shopifyId);
         go('detail');

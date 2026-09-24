@@ -272,6 +272,18 @@ export function itemsOf(order: ShopifyOrder): OrderItem[] {
   return order.lineItems.nodes.map(itemFrom).filter((i) => i.quantity > 0);
 }
 
+/**
+ * The contents line printed on a courier's AWB, e.g. "OKA Carbon Black x1;
+ * Tongs x2" — rebuilt after an order edit so the label matches the box.
+ */
+export function packageDescription(items: Pick<OrderItem, 'title' | 'quantity'>[], max = 250): string {
+  const text = items
+    .filter((i) => i.quantity > 0)
+    .map((i) => `${i.title} x${i.quantity}`)
+    .join('; ');
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
 /** What the customer still owes on the Shopify order: the cash to collect. */
 export function shopifyCodOf(order: ShopifyOrder): number {
   const owed = order.totalOutstandingSet?.shopMoney?.amount;

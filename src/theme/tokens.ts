@@ -25,6 +25,10 @@ export const C = {
   dark: '#1C2321',
   darkCamera: '#141917',
   scanLine: '#3B82F6',
+  /** In-house truck loading: blue instead of green, so it can't be mistaken for a courier pickup. */
+  blue: '#1D4ED8',
+  blueFlash: '#3B82F6',
+  blueTint: '#E7EEFD',
   recordDot: '#FF5A5A',
   recordText: '#FF9A9A',
 
