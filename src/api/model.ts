@@ -91,7 +91,9 @@ export function carrierOfTracking(company: string | null, number: string | null)
  * The parcel OKA recorded on the Shopify order when it was fulfilled: the
  * newest live fulfillment's tracking number and courier.
  */
-export function parcelFromShopify(order: ShopifyOrder): { carrier: CarrierKey; awb: string } | null {
+export function parcelFromShopify(
+  order: Pick<ShopifyOrder, 'fulfillments'>,
+): { carrier: CarrierKey; awb: string } | null {
   const live = (order.fulfillments ?? [])
     .filter((f) => !/cancel|error|fail/i.test(f.status ?? ''))
     .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));

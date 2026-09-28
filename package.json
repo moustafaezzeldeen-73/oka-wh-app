@@ -12,6 +12,7 @@
     "test:logic": "tsc -p tsconfig.test.json && node .test-build/scripts/test-logic.js",
     "verify": "node scripts/verify-live.mjs",
     "check:jt": "node scripts/check-jt.mjs",
+    "report": "tsc -p tsconfig.test.json && node scripts/report.mjs",
     "bundle:android": "expo export --platform android --output-dir dist",
     "shopify:token": "node scripts/shopify-token.mjs",
     "test:oauth": "node scripts/test-oauth.mjs"

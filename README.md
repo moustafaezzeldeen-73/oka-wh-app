@@ -14,7 +14,8 @@ live **Shopify Admin**, **J&T Express** and **Bosta** data. There is no mock dat
 | **Order detail** | AWB and courier, tracking phase, J&T delivery problems with the courier's note and photos, COD-mismatch warning with a one-tap fix, customer card, Bosta ranking and address-clarity scores, call / WhatsApp / photo / edit actions, contact history, line items with real product images, delivery address, COD breakdown, attached photos. |
 | **Edit order** | Change quantities, add products from the live catalogue, correct the delivery address. Commits a real Shopify order edit, then brings the courier's AWB in line: the COD becomes Shopify's new balance and the AWB's contents are rebuilt from the edited items — Bosta's `packageDetails` (description and item count), J&T's `pickInfo` (items, prices, shipping, COD) and remark. If the courier refuses, the app says so instead of "Saved". Locked once the courier holds the parcel. |
 | **Tracking** | Five-phase timeline with real timestamps from the courier, the delivering courier with call and WhatsApp actions, the J&T branch line, and J&T's full scan history with signature / proof-of-delivery photos and delivery codes. |
-| **Modes** | Truck-loading and shipping-status entry points, plus a live shift summary. |
+| **Modes** | Truck-loading, shipping-status and delivery-report entry points, plus a live shift summary. |
+| **Delivery report** | For 7 / 14 / 30 days, this month or last month: delivery and return rates (over finished parcels), first-attempt rate and average attempts; why parcels come back (the last reason per return, or every failed attempt — J&T's and Bosta's wording grouped into refused, no answer, postponed, address, not at the address, wanted to open, courier error…); the worst governorates and areas, ranked by return rate adjusted for small numbers, with what their returns cost; the cost of returned parcels and the goods value that came back unsold; money in (cash J&T, Bosta and OKA's drivers collected, plus online payments) against money out (J&T freight, Bosta fees with VAT, in-house delivery costs, refunds) and the balance; each courier's net due; cash still out with couriers; and parcels booked days ago that no courier ever picked up. Also in the terminal: `npm run report`. |
 | **Shipping status** | Phone-number lookup showing the shipment stage and courier. |
 | **Truck loading** | Pick the truck first — **J&T**, **Bosta** or **In-house** — then burst scan with beep and haptics, running count, undo. On a J&T or Bosta truck, a parcel booked with another courier (or none) is refused with a red flash and the reason. The in-house truck (the screen turns **blue** instead of green) takes orders without a courier — tagged `oka-inhouse`, out for delivery — and J&T or Bosta parcels rerouted to OKA's own delivery under the same AWB, but only while that courier hasn't picked the parcel up; a rerouted parcel only gets a note on the Shopify order, its courier and AWB left as they are. If the courier's status can't be read, the in-house truck refuses rather than guess. An order-number field covers parcels without a label. Each load is logged onto its Shopify order. |
 | **Call** | Places the call, records it, then captures the outcome and attaches the recording to the order. |
@@ -183,9 +184,11 @@ server-side, which is what the proxy path is for.
 ## Tests
 
 ```bash
-npm test          # typecheck + 302 logic and OAuth tests
+npm test          # typecheck + 368 logic and OAuth tests
 npm run verify    # live API checks against the real accounts
 npm run check:jt  # just the J&T keys (add AWBs to also read those parcels)
+npm run report    # the delivery report for the last 30 days, in the terminal
+npm run report -- --period lastMonth --csv parcels.csv   # plus one row per order
 npm run bundle:android
 ```
 
@@ -195,7 +198,10 @@ J&T and Bosta APIs**, so a schema change on any side surfaces as a failing test
 replaced). It covers J&T request signing, the courier joins, state and timeline
 mapping for both couriers, J&T problems and returns, COD mismatches, J&T update
 payloads, edit locking, Egyptian phone normalisation, note rendering and
-truncation, metafield round-tripping, and every list filter.
+truncation, metafield round-tripping, every list filter, and the delivery
+report: governorate names as each courier spells them, failure-reason
+grouping on live wording, parcel outcomes, fees, money in and out, and the
+loader's batching against fake APIs.
 
 ## Notes from wiring this up against the live APIs
 

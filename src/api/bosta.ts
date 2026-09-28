@@ -51,6 +51,10 @@ async function request<T>(
   return unwrap<T>(res);
 }
 
+/** Any Bosta call, resolving to the unwrapped payload — used by the delivery report. */
+export const bostaRequest = <T>(method: 'GET' | 'POST', path: string, body?: unknown) =>
+  request<T>(method, path, body);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Calls
 // ─────────────────────────────────────────────────────────────────────────────

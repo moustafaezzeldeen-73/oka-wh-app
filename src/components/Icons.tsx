@@ -129,3 +129,11 @@ export const ClockIcon = ({ size = 26, color = C.white }: IconProps) => (
     />
   </Svg>
 );
+
+export const ChartIcon = ({ size = 26, color = C.white }: IconProps) => (
+  <Svg width={size} height={size} viewBox="0 0 26 26" fill="none">
+    <Rect x={3} y={14} width={4.5} height={9} rx={1.2} fill={color} />
+    <Rect x={10.75} y={8} width={4.5} height={15} rx={1.2} fill={color} />
+    <Rect x={18.5} y={3} width={4.5} height={20} rx={1.2} fill={color} />
+  </Svg>
+);

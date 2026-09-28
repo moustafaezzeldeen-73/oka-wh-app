@@ -57,7 +57,8 @@ export type Screen =
   | 'modes'
   | 'pickup'
   | 'shipstatus'
-  | 'shipdetail';
+  | 'shipdetail'
+  | 'report';
 
 export type Sheet = 'wa' | 'call' | 'photo' | 'deliver' | null;
 

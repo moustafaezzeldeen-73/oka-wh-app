@@ -7,7 +7,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "outDir": ".test-build",
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "scripts/test-logic.ts",
@@ -22,6 +24,8 @@
     "src/api/shopify.ts",
     "src/api/shopifyToken.ts",
     "src/api/callRecording.ts",
-    "src/api/geminiTranscript.ts"
+    "src/api/geminiTranscript.ts",
+    "src/api/analytics.ts",
+    "src/api/analyticsLoader.ts"
   ]
 }

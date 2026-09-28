@@ -25,9 +25,10 @@ export * from './jtState';
  * headers (see jtState.signedRequest). J&T answers HTTP 200 even on failure;
  * `code: "1"` is the only success.
  *
- * There is no "list my shipments" call this account may use (the date-range
- * query is permission-gated), so shipments are always looked up by AWB or by
- * OKA's own reference, SHOPIFY<order number>.
+ * Shipments are looked up by AWB or by OKA's own reference, SHOPIFY<order
+ * number>. (The date-range query — getOrders command 3, at most 7 days, up to
+ * 100 a page — does work for this account, but Shopify already knows which
+ * AWBs belong to which order, so nothing here needs it.)
  */
 
 /** Batch sizes: trace documents 30; order queries are kept conservative. */
@@ -65,6 +66,10 @@ async function call<T>(path: string, bizContent: Record<string, unknown>, withAu
   }
   return res.data as T;
 }
+
+/** Any J&T call, resolving to `data` — used by the delivery report. */
+export const jtRequest = <T>(path: string, bizContent: Record<string, unknown>, withAuth: boolean) =>
+  call<T>(path, bizContent, withAuth);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reads

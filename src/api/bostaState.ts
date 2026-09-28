@@ -27,7 +27,16 @@ export type BostaDelivery = {
   businessReference?: string;
   cod: number;
   type?: { code: number; value: string };
-  state: { value: string; code: number; childState?: unknown; deliveryTime?: string | null };
+  state: {
+    value: string;
+    code: number;
+    childState?: unknown;
+    deliveryTime?: string | null;
+    pickedUpTime?: string;
+    returnedToBusiness?: string;
+    /** Every failed attempt, newest last, with the courier's reason. */
+    exception?: BostaException[];
+  };
   receiver?: {
     _id?: string;
     phone?: string;
@@ -65,6 +74,33 @@ export type BostaDelivery = {
   pendingPickup?: string;
   latestAWBPrintDate?: string;
   notes?: string;
+  /** Bosta's shipping fee before VAT — only on the single-delivery endpoint. */
+  shipmentFees?: number;
+  /** COD as booked; `cod` drops to 0 once a parcel is returned. Single-delivery endpoint only. */
+  originalCod?: number;
+  /** Settlement for this parcel — single-delivery endpoint only. */
+  wallet?: BostaWallet;
+};
+
+/** One failed attempt. `attemptType: "return"` is the trip back to OKA, not a customer failure. */
+export type BostaException = {
+  reason?: string;
+  code?: number;
+  time?: string;
+  attemptType?: string;
+};
+
+/** Amounts are strings ("86.64"); `deposited_amt` is what reached OKA's balance (COD − fees). */
+export type BostaWallet = {
+  cashCycle?: {
+    cod?: string;
+    bosta_fees?: string;
+    shipping_fees?: string;
+    vat?: string;
+    deposited_amt?: number;
+    deposited_at?: string;
+  } | null;
+  cashout?: { amount?: string; transaction_date?: string; transaction_id?: string } | null;
 };
 
 export type BostaTrackEvent = {

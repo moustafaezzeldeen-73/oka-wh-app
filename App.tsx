@@ -16,6 +16,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 
 import { BusyBar, Toast } from './src/components/Toast';
 import { TabBar } from './src/components/TabBar';
+import { AnalyticsScreen } from './src/screens/AnalyticsScreen';
 import { CallSheet } from './src/screens/CallSheet';
 import { EditOrderScreen } from './src/screens/EditOrderScreen';
 import { ModesScreen } from './src/screens/ModesScreen';
@@ -102,6 +103,7 @@ function Shell() {
         {screen === 'modes' ? <ModesScreen /> : null}
         {screen === 'pickup' ? <PickupScreen /> : null}
         {screen === 'shipstatus' ? <ShipStatusScreen /> : null}
+        {screen === 'report' ? <AnalyticsScreen /> : null}
 
         {screen === 'detail' ? (
           selected ? <OrderDetailScreen order={selected} /> : <Loading label={L.loading} />

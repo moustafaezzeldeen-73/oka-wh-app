@@ -79,6 +79,26 @@ import { stringsFor } from '../src/i18n/strings';
 import type { ShopifyOrder } from '../src/api/shopify';
 import { createTokenSource, ShopifyTokenError, type TokenFetcher } from '../src/api/shopifyToken';
 import {
+  areaKey,
+  bostaFee,
+  bostaOutcome,
+  bostaReasons,
+  emptyCourierData,
+  factFor,
+  governorateOf,
+  isCodOrder,
+  jtOutcome,
+  jtReasons,
+  normalizeText,
+  periodRange,
+  reasonKeyOf,
+  summarize,
+  type AnalyticsOrder,
+  type JtWaybill,
+  type ShipmentFact,
+} from '../src/api/analytics';
+import { exportQuery, loadAnalytics, parseJsonl, type AnalyticsSources } from '../src/api/analyticsLoader';
+import {
   audioMimeType,
   cairoStamp,
   geminiCanTranscribe,
@@ -1265,7 +1285,380 @@ section('Truck loading');
   eq('in-house order refused on a courier truck', truckRefusal(inhouse, 'jt', L), '#2623621 is booked with In-house delivery, not J&T Express');
 }
 
-tokenTests().then(() => {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Delivery analytics — fixtures captured live on 28 Sep 2026 (Shopify bulk
+// export, J&T getWaybillInfo / trace / getOrders, Bosta search + single
+// delivery). Structure verbatim; AWBs, ids, courier names, phones, payout
+// amounts and photo links replaced.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One line of the Shopify bulk export, verbatim. */
+const EXPORT_LINE =
+  '{"id":"gid:\\/\\/shopify\\/Order\\/1000000000001","name":"#2767521","tags":["to_be_shipped"],"createdAt":"2026-09-20T04:48:55Z","cancelledAt":null,"displayFinancialStatus":"PENDING","paymentGatewayNames":["Cash on Delivery (COD)"],"currentTotalPriceSet":{"shopMoney":{"amount":"259.0"}},"totalReceivedSet":{"shopMoney":{"amount":"0.0"}},"totalRefundedSet":{"shopMoney":{"amount":"0.0"}},"totalOutstandingSet":{"shopMoney":{"amount":"259.0"}},"fulfillments":[{"status":"SUCCESS","createdAt":"2026-09-20T07:01:45Z","trackingInfo":[{"company":"J\\u0026T Express","number":"JEG000500000101"}]}],"shippingAddress":{"city":"القناطر الخيرية","province":"Qalyubia","provinceCode":"KB"},"deliveryCost":null}';
+
+const BASE_ORDER = parseJsonl<AnalyticsOrder>(EXPORT_LINE)[0];
+
+function aOrder(name: string, awb: string | null, over: Partial<AnalyticsOrder> = {}): AnalyticsOrder {
+  return {
+    ...BASE_ORDER,
+    id: `gid://shopify/Order/${name.replace('#', '')}`,
+    name,
+    fulfillments: awb
+      ? [
+          {
+            status: 'SUCCESS',
+            createdAt: '2026-09-20T07:01:45Z',
+            trackingInfo: [{ company: /^JEG/.test(awb) ? 'J&T Express' : 'Bosta', number: awb }],
+          },
+        ]
+      : [],
+    ...over,
+  };
+}
+
+const shopMoney = (n: number) => ({ shopMoney: { amount: String(n) } });
+
+/** Returned parcel (isSign 2 on getWaybillInfo), newest scan first as J&T sends them. */
+const JT_RETURN_SCANS: JtScan[] = [
+  { scanTime: '2026-09-21 16:31:50', scanType: 'Return Sign', scanTypeCode: 111, problemReason: '退件签收', scanNetworkName: 'AL-Mandara BR', desc: '【المنتزه】【AL-Mandara BR】J&T courier Courier A(01000000001) completed the return delivery.' },
+  { scanTime: '2026-09-21 11:00:47', scanType: 'Delivery scan', scanTypeCode: 94, problemReason: '派件扫描', scanNetworkName: 'AL-Mandara BR' },
+  // Structure verbatim; a problem on the way back to OKA is not a customer failure.
+  { scanTime: '2026-09-20 22:00:00', scanType: 'Abnormal parcels scan', scanTypeCode: 110, problemType: '202', problemReason: '问题件扫描', probleDescription: 'Abnormal parcelScan,202,No Answer or Phone Switched Off,العميل لا يرد', scanNetworkName: '10thRamadanCityHub' },
+  { scanTime: '2026-09-20 18:16:57', scanType: 'Returned parcel scan', scanTypeCode: 172, problemReason: '退件扫描', scanNetworkName: 'BS-Beni Suef DC' },
+  { scanTime: '2026-09-20 15:46:13', scanType: 'Left Over Scan', scanTypeCode: 120, problemReason: '留仓件入仓', scanNetworkName: 'BS-Beni Suef DC' },
+  { scanTime: '2026-09-20 15:39:02', scanType: 'Abnormal parcels scan', scanTypeCode: 110, problemType: '1004', problemReason: '问题件扫描', probleDescription: 'Abnormal parcelScan,1004,The goods do not match after opening,الرفض بعد المعاينة', problemPicUrl: 'https://example.com/p1.jpeg', scanNetworkName: 'BS-Beni Suef DC' },
+  { scanTime: '2026-09-20 11:01:21', scanType: 'Delivery scan', scanTypeCode: 94, problemReason: '派件扫描', scanNetworkName: 'BS-Beni Suef DC' },
+  { scanTime: '2026-09-20 08:48:27', scanType: 'Arrival Scan', scanTypeCode: 92, problemReason: '到件扫描', scanNetworkName: 'BS-Beni Suef DC' },
+  { scanTime: '2026-09-19 14:38:43', scanType: 'Pickup scan', scanTypeCode: 10, problemReason: '快件揽收', scanNetworkName: 'AL-Mandara BR' },
+];
+
+/** A parcel still out: two tries, one J&T sorting mistake, one reschedule. */
+const JT_ACTIVE_SCANS: JtScan[] = [
+  { scanTime: '2026-09-28 08:49:43', scanType: 'Delivery scan', scanTypeCode: 94, problemReason: '派件扫描' },
+  { scanTime: '2026-09-27 15:59:43', scanType: 'Abnormal parcels scan', scanTypeCode: 110, problemType: '999', probleDescription: 'Abnormal parcelScan,999,Change The Delivery Time,يوم الحد' },
+  { scanTime: '2026-09-27 08:37:37', scanType: 'Abnormal parcels scan', scanTypeCode: 110, probleDescription: 'Abnormal parcelScan,998,Three-segment code error,تخص فرع حدائق اكتوبر' },
+  { scanTime: '2026-09-26 19:27:10', scanType: 'Pickup scan', scanTypeCode: 10, problemReason: '快件揽收' },
+];
+
+/** Bosta: returned to OKA after three failed tries; the fees come from the single-delivery endpoint. */
+const BOSTA_RETURNED = {
+  _id: 'x1',
+  trackingNumber: '6400000001',
+  businessReference: '#2761121',
+  cod: 0,
+  type: { code: 20, value: 'Return to Origin' },
+  state: {
+    value: 'Returned to business',
+    code: 46,
+    pickedUpTime: '2026-09-26T06:51:48.997Z',
+    exception: [
+      { reason: 'The mobile phone is off', code: 17, time: '2026-09-24T15:11:28.065Z', attemptType: 'return' },
+      { reason: 'Retry delivery - the customer is not in the address.', code: 1, time: '2026-09-22T13:13:19.470Z', attemptType: 'delivery' },
+      { reason: 'Retry delivery - the customer is not in the address.', code: 1, time: '2026-09-21T13:28:15.698Z', attemptType: 'delivery' },
+      { reason: 'Postponed - the customer requested postponement for another day.', code: 3, time: '2026-09-20T13:41:04.848Z', attemptType: 'delivery' },
+    ],
+  },
+  dropOffAddress: { city: { _id: 'city-mt', name: 'Matrouh', nameAr: 'مرسي مطروح' } },
+  numberOfAttempts: 5,
+  createdAt: 'Fri Sep 18 2026 06:27:16 GMT+0000 (Coordinated Universal Time)',
+  shipmentFees: 76,
+  originalCod: 434,
+  wallet: {
+    cashCycle: { cod: '0.00', bosta_fees: '86.64', shipping_fees: '76.00', vat: '10.64', deposited_amt: -86.64 },
+    cashout: { amount: '1000.00', transaction_date: '2026-09-28T00:00:00.000Z', transaction_id: 'MONCOD00XXX00' },
+  },
+} as unknown as BostaDelivery;
+
+const BOSTA_DELIVERED_LIST = {
+  _id: 'x2',
+  trackingNumber: '6600000002',
+  businessReference: '#2761621',
+  cod: 434,
+  type: { code: 10, value: 'Send' },
+  state: { value: 'Delivered', code: 45, pickedUpTime: '2026-09-20T08:58:19.203Z' },
+  dropOffAddress: { city: { _id: 'city-dt', name: 'Damietta', nameAr: 'دمياط' } },
+  numberOfAttempts: 1,
+  paymentMethod: 'COD',
+  createdAt: 'Fri Sep 18 2026 06:27:31 GMT+0000 (Coordinated Universal Time)',
+} as unknown as BostaDelivery;
+
+section('Analytics: names as couriers and customers type them');
+{
+  eq('Arabic letter variants fold together', normalizeText('الإسكندرية'), normalizeText('الاسكندريه'));
+  eq('Arabic-Indic digits', normalizeText('عماره ١٦'), 'عماره 16');
+  eq(
+    'Bosta city spellings → governorate',
+    ['Bani Suif', 'El Kalioubia', 'Behira', 'Kafr Alsheikh', 'Assuit', 'Fayoum', 'Sharqia', 'Matrouh', 'Monufia'].map((n) => governorateOf(null, n)),
+    ['BNS', 'KB', 'BH', 'KFS', 'AST', 'FYM', 'SHR', 'MT', 'MNF'],
+  );
+  eq(
+    'J&T receiver.prov in either language → governorate',
+    ['الجيزة', 'القاهرة', 'أسيوط', 'بني سويف', 'الإسماعيلية', 'المنوفية', 'Al Sharqia', 'South Sinai', 'محافظة الإسماعيلية'].map((n) => governorateOf(null, n)),
+    ['GZ', 'C', 'AST', 'BNS', 'IS', 'MNF', 'SHR', 'JS', 'IS'],
+  );
+  eq('Shopify provinceCode wins; legacy codes fold in', [governorateOf('ALX', 'Cairo'), governorateOf('EG-GZ'), governorateOf('SU'), governorateOf('HU')], ['ALX', 'GZ', 'GZ', 'C']);
+  eq('unknown name → null', governorateOf(null, 'Atlantis'), null);
+  eq(
+    'area keys drop noise words and a leading governorate',
+    [areaKey('مدينة نصر', 'C'), areaKey('القاهرة مدينة نصر', 'C'), areaKey('الجيزه /العمرنيه الشرقيه', 'GZ'), areaKey('Sheikh Zayed', 'GZ')],
+    ['نصر', 'نصر', 'العمرنيه الشرقيه', 'sheikh zayed'],
+  );
+  eq('placeholder or governorate-only city → no area', [areaKey('0'), areaKey('القاهره', 'C'), areaKey('  ')], [null, null, null]);
+}
+
+section('Analytics: failure reasons (live J&T and Bosta wording)');
+{
+  const cases: [string, string][] = [
+    ['Customer refuse by call', 'refused'],
+    ['Customer refuse by WhatsApp', 'refused'],
+    ['The goods do not match after opening', 'refused'],
+    ['No Answer or Phone Switched Off', 'no_answer'],
+    ['The mobile phone is off', 'no_answer'],
+    ['Change The Delivery Time', 'postponed'],
+    ['Postponed - the customer requested postponement for another day.', 'postponed'],
+    ['Wrong or Undetailed Address Information', 'address'],
+    ['Retry delivery - the customer changed the address.', 'address'],
+    ['Waiting for data modification - address not clear', 'address'],
+    ['Retry delivery - the customer is not in the address.', 'not_home'],
+    ['Cancellation - the customer wants to open the shipment.', 'open_package'],
+    ['Cancellation - the customer refuses to receive the shipment.', 'refused'],
+    ['Three-segment code error', 'courier_error'],
+    ['miss-sorting from DC', 'courier_error'],
+    ['العميل لا يرد', 'no_answer'],
+    ['رفض الاستلام', 'refused'],
+    ['تأجيل', 'postponed'],
+    ['Other Kind Of Problems', 'other'],
+  ];
+  eq('each live phrasing lands in its bucket', cases.map(([t]) => reasonKeyOf(t)), cases.map(([, k]) => k));
+  eq('code fallback when the text is unknown', reasonKeyOf('???', 'no_answer'), 'no_answer');
+}
+
+section('Analytics: J&T parcel outcome');
+{
+  const info = (isSign: number): JtWaybill => ({ waybillNo: 'JEG1', isSign, totalFreight: 62.7, numberOfDispatch: 1 });
+  eq('isSign 1 → delivered', jtOutcome(info(1), [], undefined), 'delivered');
+  eq('isSign 2 → returned (failed)', jtOutcome(info(2), [], undefined), 'failed');
+  eq('isSign 0 + return scan → failed (on its way back)', jtOutcome(info(0), JT_RETURN_SCANS.slice(3), undefined), 'failed');
+  eq('isSign 0 + delivery scans → active', jtOutcome(info(0), JT_ACTIVE_SCANS, undefined), 'active');
+  eq('not on getWaybillInfo and no scans → waiting for pickup', jtOutcome(undefined, [], { orderStatus: 101 } as JtOrder), 'waiting');
+  eq('cancelled order → cancelled', jtOutcome(undefined, [], { orderStatus: 104 } as JtOrder), 'cancelled');
+
+  const reasons = jtReasons(JT_RETURN_SCANS);
+  eq('only problems before the return count', reasons.map((r) => r.key), ['refused']);
+  eq('reason text keeps J&T wording and the courier note', reasons[0].text, 'The goods do not match after opening — الرفض بعد المعاينة');
+  eq('attempt reasons oldest first', jtReasons(JT_ACTIVE_SCANS).map((r) => r.key), ['courier_error', 'postponed']);
+  const noteOnly = jtReasons([{ scanTime: '2026-09-27 15:59:43', scanTypeCode: 110, probleDescription: 'Abnormal parcelScan,997,Other Kind Of Problems,العميل لا يرد' }]);
+  eq("the courier's note decides when J&T's reason is generic", noteOnly[0].key, 'no_answer');
+  const reasonWins = jtReasons([{ scanTime: '2026-09-27 15:59:43', scanTypeCode: 110, probleDescription: 'Abnormal parcelScan,203,Wrong or Undetailed Address Information,لايرد' }]);
+  eq("J&T's own reason beats the courier's note", reasonWins[0].key, 'address');
+}
+
+section('Analytics: Bosta parcel outcome, reasons and fees');
+{
+  eq('delivered (45, Send)', bostaOutcome(BOSTA_DELIVERED_LIST), 'delivered');
+  eq('returned to business (46, Return to Origin)', bostaOutcome(BOSTA_RETURNED), 'failed');
+  eq('on its way back (RTO type, still moving) → failed', bostaOutcome({ ...BOSTA_RETURNED, state: { value: 'Out for delivery', code: 41 } } as BostaDelivery), 'failed');
+  eq('pickup requested → waiting', bostaOutcome({ ...BOSTA_DELIVERED_LIST, state: { value: 'Pickup requested', code: 10 } } as BostaDelivery), 'waiting');
+  eq('received at warehouse → active', bostaOutcome({ ...BOSTA_DELIVERED_LIST, state: { value: 'Received at warehouse', code: 24 } } as BostaDelivery), 'active');
+  eq('terminated before pickup → cancelled', bostaOutcome({ ...BOSTA_DELIVERED_LIST, state: { value: 'Terminated', code: 48 } } as BostaDelivery), 'cancelled');
+  eq('lost → failed', bostaOutcome({ ...BOSTA_DELIVERED_LIST, state: { value: 'Lost', code: 100 } } as BostaDelivery), 'failed');
+  const r = bostaReasons(BOSTA_RETURNED);
+  eq('return-trip exceptions excluded, oldest first', r.map((x) => x.key), ['postponed', 'not_home', 'not_home']);
+  eq('settled fee (with VAT) from the wallet', bostaFee(BOSTA_RETURNED), 86.64);
+  eq('fee + 14% VAT when only shipmentFees is known', bostaFee({ ...BOSTA_DELIVERED_LIST, shipmentFees: 76 } as BostaDelivery), 86.64);
+  eq('no fee on the list endpoint', bostaFee(BOSTA_DELIVERED_LIST), null);
+}
+
+section('Analytics: one fact per order');
+{
+  const data = emptyCourierData();
+  data.jt.read = true;
+  data.jt.waybills.set('JEG000500000101', { waybillNo: 'JEG000500000101', isSign: 2, totalFreight: 52.67, numberOfDispatch: 1 });
+  data.jt.scans.set('JEG000500000101', JT_RETURN_SCANS);
+  data.jt.waybills.set('JEG000500000102', { waybillNo: 'JEG000500000102', isSign: 1, totalFreight: 66.46, numberOfDispatch: 1 });
+  // J&T collects what it was booked for, which can differ from Shopify's figure.
+  data.jt.orders.set('JEG000500000102', { billCode: 'JEG000500000102', txlogisticId: 'SHOPIFY2767321', itemsValue: 411 } as JtOrder);
+  data.bosta.read = true;
+  data.bosta.deliveries.set('6400000001', BOSTA_RETURNED);
+  data.bosta.deliveries.set('6600000002', BOSTA_DELIVERED_LIST);
+
+  const failedJt = factFor(BASE_ORDER, data);
+  eq('J&T returned parcel', [failedJt.carrier, failedJt.outcome, failedJt.gov, failedJt.fee, failedJt.reason?.key, failedJt.collected], ['jt', 'failed', 'KB', 52.67, 'refused', 0]);
+  const deliveredJt = factFor(aOrder('#2767321', 'JEG000500000102', { currentTotalPriceSet: shopMoney(496), totalOutstandingSet: shopMoney(496) }), data);
+  eq('J&T delivered: cash is what J&T collected', [deliveredJt.outcome, deliveredJt.collected, deliveredJt.collectedFromCourier], ['delivered', 411, true]);
+  data.jt.orders.delete('JEG000500000102');
+  const noJtOrder = factFor(aOrder('#2767321', 'JEG000500000102', { totalOutstandingSet: shopMoney(487) }), data);
+  eq("…or Shopify's balance when J&T's record isn't loaded", [noJtOrder.collected, noJtOrder.collectedFromCourier], [487, false]);
+
+  const bostaFailed = factFor(aOrder('#2761121', '6400000001', { shippingAddress: null }), data);
+  eq('Bosta returned: governorate from Bosta, settled fee', [bostaFailed.outcome, bostaFailed.gov, bostaFailed.fee, bostaFailed.attempts, bostaFailed.reason?.key], ['failed', 'MT', 86.64, 5, 'not_home']);
+  const bostaDelivered = factFor(aOrder('#2761621', '6600000002'), data);
+  eq('Bosta delivered: COD from Bosta, fee unknown until read', [bostaDelivered.collected, bostaDelivered.fee], [434, null]);
+
+  const inhouse = factFor(
+    aOrder('#2800021', null, {
+      tags: ['oka-inhouse', 'oka-delivered'],
+      displayFinancialStatus: 'PAID',
+      totalReceivedSet: shopMoney(259),
+      totalOutstandingSet: shopMoney(0),
+      deliveryCost: { value: '45.0' },
+    }),
+    data,
+  );
+  eq('in-house delivered: driver cash + delivery cost', [inhouse.carrier, inhouse.outcome, inhouse.collected, inhouse.fee], ['inhouse', 'delivered', 259, 45]);
+  const rerouted = factFor(aOrder('#2800121', 'JEG000599999999', { tags: ['oka-inhouse'] }), data);
+  eq('J&T never picked it up, OKA truck took it → in-house', [rerouted.carrier, rerouted.outcome], ['inhouse', 'active']);
+  const prepaid = factFor(
+    aOrder('#2800221', null, { paymentGatewayNames: ['Paymob'], displayFinancialStatus: 'PAID', totalReceivedSet: shopMoney(700), totalOutstandingSet: shopMoney(0) }),
+    data,
+  );
+  eq('paid online, not shipped yet', [isCodOrder(prepaid as unknown as AnalyticsOrder), prepaid.cod, prepaid.online, prepaid.carrier, prepaid.outcome], [false, false, 700, null, 'waiting']);
+  const unread = factFor(BASE_ORDER, emptyCourierData());
+  eq('courier not readable → unknown, never guessed', unread.outcome, 'unknown');
+}
+
+section('Analytics: report');
+{
+  const f = (over: Partial<ShipmentFact>): ShipmentFact => ({
+    orderId: 'o',
+    order: '#1',
+    createdAt: '2026-09-20T10:00:00Z',
+    carrier: 'jt',
+    awb: 'JEG1',
+    outcome: 'delivered',
+    gov: 'C',
+    area: null,
+    areaLabel: null,
+    attempts: 1,
+    reason: null,
+    attemptReasons: [],
+    value: 300,
+    cod: true,
+    collected: 300,
+    collectedFromCourier: true,
+    online: 0,
+    refunded: 0,
+    fee: 60,
+    ...over,
+  });
+  const facts: ShipmentFact[] = [
+    f({ order: '#1' }),
+    f({ order: '#2', attempts: 2 }),
+    f({ order: '#3', outcome: 'failed', collected: 0, fee: 50, gov: 'KB', reason: { key: 'refused', text: 'Customer refuse by call' }, attemptReasons: [{ key: 'refused', text: 'Customer refuse by call' }] }),
+    f({ order: '#4', outcome: 'failed', collected: 0, fee: 40, gov: 'C', reason: { key: 'no_answer', text: 'No Answer' } }),
+    f({ order: '#5', outcome: 'active', collected: 0, value: 250 }),
+    f({ order: '#6', outcome: 'waiting', collected: 0, fee: null, createdAt: '2026-09-20T10:00:00Z' }),
+    f({ order: '#7', carrier: 'bosta', awb: '123', outcome: 'failed', collected: 0, fee: null, gov: 'GZ', reason: { key: 'refused', text: 'refuses' } }),
+    f({ order: '#8', carrier: 'bosta', awb: '124', outcome: 'delivered', collected: 434, fee: 86.64, gov: 'GZ' }),
+    f({ order: '#9', carrier: 'inhouse', awb: null, outcome: 'delivered', collected: 259, fee: 45, gov: 'ALX' }),
+    f({ order: '#10', carrier: null, awb: null, outcome: 'waiting', collected: 0, fee: null, online: 700, cod: false }),
+    f({ order: '#11', carrier: null, awb: null, outcome: 'cancelled', collected: 0, fee: null, refunded: 120, cod: false }),
+  ];
+  const r = summarize(facts, { from: '2026-09-20', to: '2026-09-21', now: new Date('2026-09-28T12:00:00Z') });
+  eq('counts', [r.orders, r.totals.shipments, r.notShipped, r.cancelledOrders], [11, 9, 1, 1]);
+  eq('rates over finished parcels', [r.totals.closed, r.totals.delivered, r.totals.failed, r.totals.deliveryRate, r.totals.failureRate], [7, 4, 3, 4 / 7, 3 / 7]);
+  eq('first-attempt rate', r.totals.firstAttemptRate, 3 / 4);
+  eq('stale: booked over 3 days ago, never picked up', [r.stale.count, r.stale.orders], [1, ['#6']]);
+  eq('reasons ranked by count', r.reasons.map((x) => [x.key, x.count]), [['refused', 2], ['no_answer', 1]]);
+  // Bosta's unknown fee on #7 is estimated at Bosta's average (86.64).
+  eq('failed cost with an estimate', [r.failed.count, r.failed.cost, r.failed.estimated, r.failed.uncollected], [3, 176.64, 86.64, 900]);
+  eq('money in', r.money.in, { jt: 600, bosta: 434, inhouse: 259, online: 700, total: 1993 });
+  // J&T charges on every parcel it picked up, the active one (#5) included.
+  eq('money out', r.money.out, { jt: 270, bosta: 173.28, inhouse: 45, refunds: 120, total: 608.28 });
+  eq('balance and cash on the road', [r.money.balance, r.money.onTheRoad, r.money.estimated], [1384.72, 250, 86.64]);
+  const jt = r.carriers.find((c) => c.carrier === 'jt')!;
+  eq('per courier: collected, fees, net due', [jt.collected, jt.fees, jt.net, jt.failedCost], [600, 270, 330, 90]);
+  eq('worst governorates first; places with no returns last', r.governorates.map((g) => g.key), ['KB', 'GZ', 'C', 'ALX']);
+}
+
+section('Analytics: periods and the Shopify export query');
+{
+  const now = new Date(2026, 8, 28, 15, 30);
+  const w = periodRange('7d', now);
+  eq('7 days = today and the 6 before, to midnight tonight', [w.from.getDate(), w.to.getDate(), (w.to.getTime() - w.from.getTime()) / 86_400_000], [22, 29, 7]);
+  const lm = periodRange('lastMonth', now);
+  eq('last month', [lm.from.getMonth(), lm.from.getDate(), lm.to.getMonth(), lm.to.getDate()], [7, 1, 8, 1]);
+  const q = exportQuery(new Date('2026-09-20T00:00:00Z'), new Date('2026-09-21T00:00:00Z'));
+  eq('full timestamps in the search (a bare date compares by day)', q.includes(`created_at:>='2026-09-20T00:00:00.000Z' AND created_at:<'2026-09-21T00:00:00.000Z'`), true);
+  eq('export query reads only read_orders fields', /customer|lineItems|fulfillmentOrders/.test(q), false);
+  eq('JSONL parse skips blank lines', parseJsonl<{ a: number }>('{"a":1}\n\n{"a":2}\n').map((x) => x.a), [1, 2]);
+}
+
+async function analyticsLoaderTests() {
+  section('Analytics: loader batching against fake APIs');
+  const orders = [
+    aOrder('#1', 'JEG000000000001'),
+    aOrder('#2', 'JEG000000000002'),
+    aOrder('#3', 'JEG000000000003'),
+    aOrder('#4', '6400000001'),
+    aOrder('#5', null, { createdAt: '2026-09-25T00:00:00Z' }), // outside the period
+  ];
+  const calls: string[] = [];
+  const sources: AnalyticsSources = {
+    shopify: async <T,>(query: string) => {
+      calls.push(query.includes('bulkOperationRunQuery') ? 'shopify:run' : 'shopify:poll');
+      return (query.includes('bulkOperationRunQuery')
+        ? { bulkOperationRunQuery: { bulkOperation: { id: 'gid://shopify/BulkOperation/1', status: 'CREATED' }, userErrors: [] } }
+        : { node: { id: 'gid://shopify/BulkOperation/1', status: calls.filter((c) => c === 'shopify:poll').length < 2 ? 'RUNNING' : 'COMPLETED', errorCode: null, objectCount: '5', url: 'https://storage.example/x.jsonl', partialDataUrl: null } }) as T;
+    },
+    download: async () => orders.map((o) => JSON.stringify(o)).join('\n'),
+    jt: {
+      customerCode: 'J0000000000',
+      call: async <T,>(path: string, biz: Record<string, unknown>) => {
+        calls.push(`jt:${path.split('/').pop()}:${JSON.stringify(biz.waybillNos ?? biz.billCodes ?? biz.serialNumber)}`);
+        if (path.endsWith('getWaybillInfo')) {
+          return [
+            { waybillNo: 'JEG000000000001', isSign: 1, totalFreight: 62.7, numberOfDispatch: 1 },
+            { waybillNo: 'JEG000000000002', isSign: 2, totalFreight: 43.89, numberOfDispatch: 2 },
+          ] as T;
+        }
+        if (path.endsWith('trace')) return [{ billCode: 'JEG000000000002', details: JT_RETURN_SCANS }] as T;
+        // J&T answers "nothing found" with this error, not [].
+        throw new Error('J&T 999001030: 参数无效:waybillNos size must be between 1 and 1000;');
+      },
+    },
+    bosta: async <T,>(method: string, path: string) => {
+      calls.push(`bosta:${method} ${path}`);
+      if (path === '/deliveries/search') return { deliveries: [{ ...BOSTA_RETURNED, wallet: undefined, shipmentFees: undefined }] } as T;
+      return BOSTA_RETURNED as T;
+    },
+  };
+  const cache = new Map<string, BostaDelivery>();
+  const res = await loadAnalytics(sources, {
+    from: new Date('2026-09-20T00:00:00Z'),
+    to: new Date('2026-09-21T00:00:00Z'),
+    bostaCache: cache,
+    wait: async () => undefined,
+  });
+  eq('export polled until complete; out-of-period rows dropped', [calls.filter((c) => c.startsWith('shopify')).length, res.report.orders], [3, 4]);
+  eq(
+    'J&T: one waybill call for all, trace only the unsigned, orders only the signed',
+    calls.filter((c) => c.startsWith('jt:')),
+    [
+      'jt:getWaybillInfo:["JEG000000000001","JEG000000000002","JEG000000000003"]',
+      'jt:trace:"JEG000000000002,JEG000000000003"',
+      'jt:getOrders:["JEG000000000001"]',
+    ],
+  );
+  eq("J&T's no-results error isn't a warning", res.warnings, []);
+  eq('outcomes', res.facts.map((x) => x.outcome), ['delivered', 'failed', 'waiting', 'failed']);
+  eq('Bosta: list, then the single delivery for fees', calls.filter((c) => c.startsWith('bosta:')), ['bosta:POST /deliveries/search', 'bosta:GET /deliveries/business/6400000001']);
+  eq('finished Bosta parcels cached', [...cache.keys()], ['6400000001']);
+  eq('fees in the report', [res.report.money.out.jt, res.report.money.out.bosta], [106.59, 86.64]);
+
+  calls.length = 0;
+  await loadAnalytics(sources, { from: new Date('2026-09-20T00:00:00Z'), to: new Date('2026-09-21T00:00:00Z'), bostaCache: cache, wait: async () => undefined });
+  eq('second load reuses the cache', calls.filter((c) => c.startsWith('bosta:GET')).length, 0);
+
+  const broken: AnalyticsSources = { ...sources, jt: { customerCode: 'J0', call: async () => { throw new Error('HTTP 0'); } }, bosta: null };
+  const res2 = await loadAnalytics(broken, { from: new Date('2026-09-20T00:00:00Z'), to: new Date('2026-09-21T00:00:00Z'), wait: async () => undefined });
+  eq('J&T down → parcels unknown and a warning, not a crash', [res2.facts.slice(0, 3).map((x) => x.outcome), res2.warnings.length > 0], [['unknown', 'unknown', 'unknown'], true]);
+}
+
+tokenTests()
+  .then(analyticsLoaderTests)
+  .then(() => {
   console.log(
     `\n\x1b[1m${failed === 0 ? '\x1b[32mAll green' : '\x1b[31mFailures'}\x1b[0m — ${passed} passed, ${failed} failed\n`,
   );

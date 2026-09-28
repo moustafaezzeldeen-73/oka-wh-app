@@ -12,3 +12,7 @@ npm-debug.*
 .env.*.local
 .test-build/
 dist/
+
+# Report exports (npm run report -- --csv / --json) hold order data
+*.csv
+report*.json

@@ -1,16 +1,21 @@
 import React from 'react';
-import { Pressable, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 
-import { ClockIcon, TruckIcon } from '../components/Icons';
+import { ChartIcon, ClockIcon, TruckIcon } from '../components/Icons';
 import { Card, Mono, Txt } from '../components/primitives';
 import { useApp } from '../state/AppState';
-import { C, GUTTER, R } from '../theme/tokens';
+import { C, CHIP, GUTTER, R } from '../theme/tokens';
 
 export function ModesScreen() {
   const { L, go, scanned, orders } = useApp();
 
   return (
-    <View style={{ flex: 1, minHeight: 0, paddingTop: 8, paddingHorizontal: GUTTER, paddingBottom: 110 }}>
+    // Scrolls: three mode cards plus the shift summary overflow a small phone.
+    <ScrollView
+      style={{ flex: 1, minHeight: 0 }}
+      contentContainerStyle={{ paddingTop: 8, paddingHorizontal: GUTTER, paddingBottom: 110 }}
+      showsVerticalScrollIndicator={false}
+    >
       <Txt f="sansSemi" size={22} style={{ marginBottom: 6 }}>
         {L.modes}
       </Txt>
@@ -36,6 +41,15 @@ export function ModesScreen() {
         onPress={() => go('shipstatus')}
       />
 
+      <ModeCard
+        bg={CHIP.new.fg}
+        icon={<ChartIcon />}
+        title={L.report}
+        hint={L.reportHint}
+        hintColor={C.onDark72}
+        onPress={() => go('report')}
+      />
+
       <Card style={{ marginTop: 22, padding: 16, borderRadius: R.panel }}>
         <Txt f="sansSemi" size={14} style={{ marginBottom: 12 }}>
           {L.shift}
@@ -57,7 +71,7 @@ export function ModesScreen() {
           </View>
         </View>
       </Card>
-    </View>
+    </ScrollView>
   );
 }
 
