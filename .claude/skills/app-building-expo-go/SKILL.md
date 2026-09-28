@@ -43,11 +43,17 @@ reported as blocked, not as "keys rejected".
 
 What finally worked every time, after 404s, 502s and missing QR codes:
 
-1. **Use Expo's tunnel, by default.** GitHub's forwarded port
+1. **Use a tunnel, by default — and keep two.** GitHub's forwarded port
    (`https://<codespace>-8081.app.github.dev`) looked cleaner but kept failing:
    it resets to private after a Codespace restart (→ 404), stays attached to a
    dead process (→ 502), and needs manual PORTS-tab fiddling. The user's
-   verdict: "always use the tunnel because this is what only works".
+   verdict: "always use the tunnel because this is what only works". Then
+   Expo's own tunnel died too (`failed to start tunnel` / `session closed`):
+   it runs on one ngrok account shared by all Expo users, rate-limited since
+   Feb 2026 (expo/expo#43335). So the script falls back on its own to
+   **Cloudflare's quick tunnel** (free, no account): `cloudflared tunnel --url
+   http://127.0.0.1:8081` → Metro with `EXPO_PACKAGER_PROXY_URL=https://<host>`
+   → QR `exps://<host>`, and remembers which tunnel worked.
 2. **Install `@expo/ngrok` as a devDependency.** Expo otherwise asks to
    install it globally mid-run — and in non-interactive mode it cannot ask.
 3. **Print the QR code yourself.** `EXPO_UNSTABLE_HEADLESS=1` (needed to
@@ -90,6 +96,7 @@ QR code with the phone camera (not Expo Go's "Recently opened" list).
 | Expo Go: "HTTP response error 404:" (empty body) | Old address from "Recently opened"; GitHub port not forwarded / reset | Scan the fresh QR; use the tunnel |
 | Browser "page can't be found / 404" on `…app.github.dev/status` | GitHub isn't forwarding the port at all (a private port would show a login, not 404) | PORTS → Add Port, Public — or just use the tunnel |
 | 502 | First bundle build too slow for the proxy; stale forward to a dead process; nothing listening | Warm bundles before the QR; free 8081; tunnel |
+| `CommandError: failed to start tunnel` / `session closed`, `ngrok tunnel took too long to connect`, `Cannot read properties of undefined (reading 'body')` | Expo's shared ngrok account is rate-limited (expo/expo#43335) — not your code or network | Fall back to a Cloudflare quick tunnel (the bundled script does it automatically) |
 | Blank / endless spinner on launch | App gated on `useFonts` and a font failed | Render once `fontsLoaded || fontError` |
 | `.env` value "works in scripts but not in the app" | Expo's `.env` loader treats unquoted `#` as a comment (`abc#def` → `abc`) | Quote it: `KEY="abc#def"`; make check scripts parse `.env` the same way (`node:util` `parseEnv`) |
 

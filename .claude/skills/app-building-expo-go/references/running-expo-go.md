@@ -33,7 +33,8 @@ Codespace was the dev box.
 | Route | How | Verdict |
 | --- | --- | --- |
 | LAN (`expo start`) | Phone and Metro on the same network | Impossible from a cloud box |
-| Expo tunnel (`--tunnel`, ngrok) | `exp://xxxx.exp.direct` | **What worked.** Needs `@expo/ngrok` (make it a devDependency). |
+| Expo tunnel (`--tunnel`, ngrok) | `exp://xxxx.exp.direct` | Worked for weeks — then `CommandError: failed to start tunnel` / `session closed` (or `ngrok tunnel took too long to connect`, or `Cannot read properties of undefined (reading 'body')`). Expo's tunnel runs on **one ngrok account shared by all Expo users**, rate-limited since Feb 2026 ([expo/expo#43335](https://github.com/expo/expo/issues/43335)); no fix on your side. Needs `@expo/ngrok` as a devDependency. |
+| **Cloudflare quick tunnel** | `cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8081` → `https://<words>.trycloudflare.com`; Metro started with `EXPO_PACKAGER_PROXY_URL=<that>`; QR `exps://<host>` | **The fallback that needs nothing**: free, no account, no login; WebSockets pass through. Download the binary once from `github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-<amd64\|arm64>`. Ready when the log has both the `trycloudflare.com` URL and `Registered tunnel connection`. A fresh name can take seconds to resolve — probe `/status` before showing the QR. |
 | GitHub Codespaces forwarded port | `EXPO_PACKAGER_PROXY_URL=https://<codespace>-8081.app.github.dev`, port 8081 public, QR `exps://…` | Worked once, then 404 (port reset to private / not forwarded after a Codespace restart) and 502 (stale forward, slow first bundle). Needs manual PORTS-tab steps; `gh codespace ports visibility 8081:public -c $CODESPACE_NAME` helps but can't create a missing forward. |
 | Expo WS tunnel (`EXPO_UNSTABLE_TUNNEL_V2=1`) | `@expo/ws-tunnel` | Requires an Expo account login; not needed. |
 
@@ -87,8 +88,16 @@ flag off and ignore the message.
 7. **Print the QR** for `exp://<host>` using Expo's own renderer
    (`@expo/cli/build/src/utils/qr.js` → `printQRCode(url).print()`), plus a
    "phone check" `/status` link for Safari.
-8. `--github` opts into the forwarded-port route with a 45 s fallback to the
-   tunnel, and a watcher that re-publics the port every 30 s.
+8. **If Expo quits or its tunnel never answers, fall back** to Cloudflare's
+   quick tunnel: start cloudflared first (to learn the host), then Metro
+   *without* `--tunnel` but with `EXPO_PACKAGER_PROXY_URL=https://<host>`,
+   warm the bundles, probe `https://<host>/status`, print `exps://<host>`.
+   Treat Expo exiting before the address is live as "try the next route",
+   not "quit" — except after Ctrl+C.
+9. **Remember what worked** (`.expo/start-codespace.json`, git-ignored with
+   `.expo/`) and try it first next time; `--ngrok` / `--cloudflare` override.
+10. `--github` opts into the forwarded-port route with a 45 s fallback to the
+   tunnels, and a watcher that re-publics the port every 30 s.
 
 Why the pieces matter, in one line each: stale servers cause 502s; npx
 wrappers don't pass signals, so Metro survives restarts; ngrok's API avoids
@@ -120,7 +129,16 @@ the font gate (rn-ui-pitfalls.md) or a JS error — shake → Reload shows it.
    fallback to tunnel, bundle warm-up.
 5. User: "always use the tunnel because this is what only works" → tunnel is
    the default; GitHub route opt-in.
+6. Weeks later Expo's tunnel itself died: `CommandError: failed to start
+   tunnel` / `session closed` — Expo's shared ngrok account being
+   rate-limited (expo/expo#43335). Added the Cloudflare quick-tunnel
+   fallback and the "remember what worked" order. Testing it in a sandbox
+   that blocks both services: a stand-in `cloudflared` on PATH printing the
+   real log lines checked the switch, the proxy URL in the manifest, and
+   the clean-up; the live part was left to the Codespace.
 
 Lesson: in a remote setup, pick the route that needs the fewest manual steps
-from the user, and make the script prove the address works (from outside,
-with the bundle built) before it shows anything to scan.
+from the user, make the script prove the address works (from outside, with
+the bundle built) before it shows anything to scan — and never depend on a
+single free shared service: keep a second route the script switches to on
+its own.

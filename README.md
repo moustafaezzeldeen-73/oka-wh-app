@@ -119,17 +119,26 @@ npm run verify            # confirm credentials, scopes and the courier joins
 npx expo start --tunnel   # then scan the QR code with Expo Go (Android or iPhone)
 ```
 
-In a GitHub Codespace use `npm run start:codespace` instead. It serves the
-app through **Expo's tunnel** (ngrok) — the route that works reliably from
-OKA's Codespace — and prints the QR code (`exp://….exp.direct`) only once the
-tunnel answers and the iPhone and Android bundles are built, so the phone never
-waits on a first build (a slow first build is what made Expo Go show 502s).
-`@expo/ngrok` is a dev dependency, so there is nothing to install mid-run. It
-also stops a leftover app server still holding port 8081 from an earlier run.
+In a GitHub Codespace use `npm run start:codespace` instead. It tries two
+public tunnels in turn and prints the QR code only once the address answers
+from outside and the iPhone and Android bundles are built, so the phone never
+waits on a first build (a slow first build is what made Expo Go show 502s):
+
+1. **Expo's tunnel** (ngrok, `exp://….exp.direct`). Since February 2026 it
+   runs on an ngrok account shared by every Expo user that ngrok rate-limits
+   ([expo/expo#43335](https://github.com/expo/expo/issues/43335)), so some days
+   it fails with `CommandError: failed to start tunnel … session closed`.
+2. **Cloudflare's quick tunnel** (`exps://….trycloudflare.com`) — free, no
+   account; `cloudflared` is downloaded once into `node_modules/.cache`.
+
+Whichever worked is remembered (`.expo/start-codespace.json`) and tried first
+next time; `npm run start:codespace -- --cloudflare` or `-- --ngrok` picks the
+first one yourself. It also stops a leftover app server still holding port
+8081 from an earlier run.
 
 `npm run start:codespace -- --github` tries GitHub's forwarded address first
 (`https://<codespace>-8081.app.github.dev`, made public) and falls back to the
-tunnel after 45 s. Expo runs headless (`EXPO_UNSTABLE_HEADLESS=1`), which stops
+tunnels after 45 s. Expo runs headless (`EXPO_UNSTABLE_HEADLESS=1`), which stops
 React Native from preparing its desktop DevTools window — that needs GUI
 libraries a Codespace doesn't have (`libatk-1.0.so.0`). In that mode Expo
 prints no QR code or keyboard shortcuts of its own; the script prints the QR
