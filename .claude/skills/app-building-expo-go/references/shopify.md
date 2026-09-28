@@ -80,3 +80,19 @@ and resolve the URL later). Return the file id as well as the URL.
   a scope error as a note, not a failure.
 - Tags drive simple app states well (`oka-ready`, `oka-inhouse`,
   `oka-delivered`) and are visible/searchable in the admin.
+
+## Reports over many orders: bulk export, full timestamps
+- A paged `orders` query with money bags and fulfillments costs ~13 points
+  per order; a report over a month drains the rate-limit bucket in a few
+  pages. `bulkOperationRunQuery` costs nothing against it: start it, poll
+  `node(id) { ... on BulkOperation { status url errorCode objectCount } }`,
+  download the JSONL from `url` (a signed Google Cloud Storage link — no
+  Shopify headers). One day of orders completed in seconds. `url` is null
+  when nothing matched. Details in
+  [delivery-analytics.md](delivery-analytics.md).
+- Search dates need full timestamps: `created_at:<2026-09-20` still returned
+  20 September's orders (compared by day, in the shop's zone). Use
+  `created_at:>='2026-09-19T21:00:00.000Z' AND created_at:<'…'`, and filter
+  locally too.
+- Egypt addresses carry `provinceCode` (ISO 3166-2:EG without `EG-`: `C`,
+  `GZ`, `ALX`, `KB`, `SHR`…). Group by it, not by the free-text `city`.

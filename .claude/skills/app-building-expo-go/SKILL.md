@@ -1,6 +1,6 @@
 ---
 name: app-building-expo-go
-description: Hard-won playbook for building, running and testing React Native / Expo apps in Expo Go — especially from a cloud dev environment (GitHub Codespaces, a remote container, a Claude cloud sandbox) onto a real iPhone or Android phone — and for wiring such apps to live Shopify Admin and courier APIs (J&T Express Egypt, Bosta). Includes the known-good Expo Go SDK 57 build (exact package versions, app.config.js, tsconfig, upgrade steps from older SDKs). Use it whenever someone builds, scaffolds or upgrades an Expo / React Native app, hits "Project is incompatible with this version of Expo Go", runs `expo start`, tests on Expo Go, asks "how do I run the app", reports that no QR code appears, Expo Go shows HTTP 404 or 502, a blank screen, a libatk / DevTools error, a keyboard covering an input, a button hidden under the tab bar, photos or uploads not saving, or integrates Shopify orders, metafields, files or courier AWBs/COD into a mobile app — even if they don't mention Expo Go by name.
+description: Hard-won playbook for building, running and testing React Native / Expo apps in Expo Go — especially from a cloud dev box (GitHub Codespaces, a remote container) onto a real phone — and for wiring them to live Shopify Admin and Egyptian courier APIs (J&T Express, Bosta). Includes the known-good Expo Go SDK 57 build and a delivery-analytics toolkit (delivery/return rates, failure reasons, worst governorates, cost of returns, money in/out). Use it whenever someone builds or upgrades an Expo / React Native app, sees "Project is incompatible with this version of Expo Go", runs `expo start`, asks how to run the app, gets no QR code, HTTP 404/502, a blank screen or a libatk error, a keyboard covering an input, a hidden button, uploads not saving, integrates Shopify orders, metafields, files or courier AWBs/COD, or wants shipping KPIs, courier-cost or COD reports — even without naming Expo Go.
 ---
 
 # Building apps for Expo Go — the playbook
@@ -18,6 +18,7 @@ the task; the reference files hold the detail.
 | Shopify Admin API: auth, orders, metafields, files, fulfilment, COD | [references/shopify.md](references/shopify.md) |
 | J&T Express Egypt or Bosta: signing, tracking, COD/AWB edits, joins | [references/couriers-egypt.md](references/couriers-egypt.md) |
 | SDK upgrades, env/secrets, device features (camera, call recordings) | [references/expo-sdk-and-config.md](references/expo-sdk-and-config.md) |
+| Delivery analytics: delivery / return rates, why parcels fail, worst cities, cost of returns, money in / out, courier net due | [references/delivery-analytics.md](references/delivery-analytics.md), templates `scripts/delivery-analytics.ts`, `scripts/analytics-loader.ts`, `scripts/report.mjs` |
 
 ## 1. Know which machine can reach what
 
@@ -92,7 +93,22 @@ QR code with the phone camera (not Expo Go's "Recently opened" list).
 | Blank / endless spinner on launch | App gated on `useFonts` and a font failed | Render once `fontsLoaded || fontError` |
 | `.env` value "works in scripts but not in the app" | Expo's `.env` loader treats unquoted `#` as a comment (`abc#def` → `abc`) | Quote it: `KEY="abc#def"`; make check scripts parse `.env` the same way (`node:util` `parseEnv`) |
 
-## 4. Habits that saved time (and the wrong turns behind them)
+## 4. Delivery analytics in brief
+
+Build it Shopify-first: one fact per order in the period, outcome from the
+courier (delivered / failed / active / waiting / cancelled / unknown), then
+roll up. Rates count finished parcels only. Worst places are ranked by a
+smoothed return rate, keyed on Shopify's `provinceCode`, never on the
+couriers' spellings. Money in is the cash the *courier* says it collected,
+plus online payments. Money out is courier fees on every picked-up parcel,
+returns included, plus in-house costs and refunds. Load Shopify with a
+**bulk export**: paging drains the rate limit. Load J&T with
+`getWaybillInfo` (1000 AWBs per call). Load Bosta fees from the
+single-delivery endpoint, capped and cached. Before building any screen, run
+the rules on one real day through the MCP connectors. Everything is in
+[references/delivery-analytics.md](references/delivery-analytics.md).
+
+## 5. Habits that saved time (and the wrong turns behind them)
 
 - **Check the docs before asserting a limitation.** Early on I told the user
   their `shpss_` secret + client ID couldn't produce a token; the Shopify docs
@@ -121,3 +137,7 @@ QR code with the phone camera (not Expo Go's "Recently opened" list).
   Fetch such data separately and fail soft.
 - **Ask for the terminal output early.** Several rounds of 404/502 guessing
   would have been one round with the last 20 terminal lines.
+- **Prototype data features on live data before any UI.** The J&T, Bosta
+  and Shopify MCP connectors can run the whole pipeline on one real day.
+  That run found the wording, name and ranking problems in minutes, and 5
+  parcels nobody had picked up in a week.
