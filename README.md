@@ -144,6 +144,29 @@ libraries a Codespace doesn't have (`libatk-1.0.so.0`). In that mode Expo
 prints no QR code or keyboard shortcuts of its own; the script prints the QR
 code.
 
+### A phone that can't run Expo Go (install over USB)
+
+`npm run build:apk` builds the app as a normal Android app,
+`oka-warehouse.apk`, with the JavaScript and the `.env` keys built in, so it
+runs without Expo Go or the app server. It works on **Android 7.0 or newer**
+(React Native's minimum), e.g. the warehouse's Huawei nova plus (MLA-L11,
+Android 7.0). Run it in the Codespace:
+
+- the first run installs Java 17 and the Android SDK (`~/android-sdk`, about
+  4 GB) and builds for 15–40 minutes;
+- later builds take a few minutes;
+- stop `npm run start:codespace` first to free memory.
+
+When it finishes:
+1. Right-click `oka-warehouse.apk` → **Download**.
+2. Plug the phone in with USB, choose **Transfer files** on the phone, and copy
+   the file into its Download folder.
+3. On the phone, tap the file in **Files** and allow **Unknown sources** if
+   asked.
+
+Rebuild and reinstall over the old one after code changes. The keys are
+inside the APK, so only give it to OKA staff.
+
 `npm run verify -- --write` additionally writes one log entry to a real order so
 you can confirm the timeline entry appears in Shopify admin.
 

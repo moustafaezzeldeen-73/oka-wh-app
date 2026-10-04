@@ -12,7 +12,7 @@ the task; the reference files hold the detail.
 
 | Situation | Read |
 | --- | --- |
-| Starting a new Expo Go app, checking/upgrading the SDK, exact working versions and config files | [references/expo-go-sdk-build.md](references/expo-go-sdk-build.md) |
+| Starting a new Expo Go app, checking/upgrading the SDK, exact working versions and config files; a phone too old for Expo Go → standalone APK over USB | [references/expo-go-sdk-build.md](references/expo-go-sdk-build.md), `scripts/build-apk.mjs` |
 | Getting the app onto a phone from a Codespace / remote box; any Expo Go error | [references/running-expo-go.md](references/running-expo-go.md) and `scripts/start-codespace.mjs` |
 | Screens, keyboard, tab bars, uploads that "look saved", fonts, RTL | [references/rn-ui-pitfalls.md](references/rn-ui-pitfalls.md) |
 | Shopify Admin API: auth, orders, metafields, files, fulfilment, COD | [references/shopify.md](references/shopify.md) |
@@ -98,6 +98,7 @@ QR code with the phone camera (not Expo Go's "Recently opened" list).
 | 502 | First bundle build too slow for the proxy; stale forward to a dead process; nothing listening | Warm bundles before the QR; free 8081; tunnel |
 | `CommandError: failed to start tunnel` / `session closed`, `ngrok tunnel took too long to connect`, `Cannot read properties of undefined (reading 'body')` | Expo's shared ngrok account is rate-limited (expo/expo#43335) — not your code or network | Fall back to a Cloudflare quick tunnel (the bundled script does it automatically) |
 | Blank / endless spinner on launch | App gated on `useFonts` and a font failed | Render once `fontsLoaded || fontError` |
+| Phone can't install/run Expo Go (old Android, no Play Store); "run it over USB" | Expo Go needs a recent phone; USB alone doesn't run JS | Build a standalone APK (`npm run build:apk`, Android 7.0+), copy it over USB file transfer, tap to install |
 | `.env` value "works in scripts but not in the app" | Expo's `.env` loader treats unquoted `#` as a comment (`abc#def` → `abc`) | Quote it: `KEY="abc#def"`; make check scripts parse `.env` the same way (`node:util` `parseEnv`) |
 
 ## 4. Delivery analytics in brief

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "expo start",
     "start:codespace": "node scripts/start-codespace.mjs",
+    "build:apk": "node scripts/build-apk.mjs",
     "android": "expo start --android",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && npm run test:logic && npm run test:oauth",

@@ -208,3 +208,50 @@ need their own (e.g. reading the phone's call recordings with
 build** (`expo-dev-client` + EAS Build). In this project those paths were
 written with an Expo Go fallback (file picker) and the dev build was left for
 later — design features so Expo Go degrades gracefully rather than failing.
+
+### An old phone that can't run Expo Go: build an APK and install it over USB
+
+The warehouse's Huawei nova plus (build `MLA-L11C185B332`) couldn't install
+Expo Go. "Run it over USB" means installing a real APK, so `npm run
+build:apk` (`scripts/build-apk.mjs` in this skill) builds a standalone
+release APK. It has the JS bundle and the `.env` config built in, so it needs
+no Expo Go and no dev server.
+
+- **Check the Android version first.** React Native 0.86 / SDK 57 need
+  **API 24 = Android 7.0**: `minSdk` in
+  `node_modules/react-native/gradle/libs.versions.toml`. A user may quote
+  the build number instead of the version; look it up (C185B332 = Android
+  7.0 / EMUI 5.0). Below 7.0, no build of this app will run.
+- **Build where Google's servers are reachable.** The SDK, NDK and Gradle's
+  `google()` Maven repo all come from `dl.google.com`. The Claude sandbox
+  blocks it (403, policy — don't route around it); the user's Codespace
+  doesn't. Build there and test everything else in the sandbox.
+- **Steps the script automates:**
+  1. Check `.env` (including the unquoted-`#` trap) and disk space (about
+     10 GB needed).
+  2. Install a **JDK 17**: the React Native Gradle plugin asks for a Java 17
+     *toolchain* even when Gradle runs on 21, and otherwise tries to
+     download one through foojay.
+  3. Download the Android command-line tools (archive name taken from
+     `dl.google.com/android/repository/repository2-3.xml`) into
+     `~/android-sdk`.
+  4. Accept the licences (`yes |`), then install `platform-tools`,
+     `platforms;android-<compileSdk>`, `build-tools;<buildTools>`,
+     `ndk;<ndkVersion>` (versions read from that toml) and `cmake;3.22.1`.
+  5. Run `npx expo prebuild --platform android --no-install` (`--clean` on
+     request), then restore `package.json`: prebuild rewrites the
+     `android` script to `expo run:android`.
+  6. Run `./gradlew assembleRelease -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
+     -Dorg.gradle.jvmargs="-Xmx4g …"`. Both ARM ABIs, because phones of that
+     era can run a 32-bit Android on a 64-bit chip.
+- **Keys reach the APK through the environment.** `expo-constants` embeds
+  the app config with a `node` step that Gradle runs. Load `.env` into the
+  build's environment rather than relying on Expo loading dotenv.
+- **Signing**: the prebuild template signs release builds with its fixed
+  debug keystore. The APK is installable, and later builds install over it.
+- **Installing over USB, with no adb on a locked-down PC**:
+  1. Download the APK from the Codespace.
+  2. Phone → **Transfer files** (MTP); copy the APK into Download.
+  3. Tap it in **Files**; allow **Unknown sources** when asked.
+- Git-ignore `/android`, `/ios` and `*.apk`. Generated native projects are
+  rebuilt from `app.config.js`, and the APK contains the keys.
