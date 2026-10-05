@@ -647,6 +647,13 @@ section('Call recording pickup');
   eq('empty recordings are ignored', pickRecording([rec('e', 'x.m4a', 3, 0)], { phone: '', startedAt: start, now }), null);
   eq('future-dated files are ignored', pickRecording([rec('f', 'x.m4a', 3600)], { phone: '', startedAt: start, now }), null);
   eq('a slightly early file still counts (clock skew)', pickRecording([rec('g', 'x.m4a', -60)], { phone: '', startedAt: start, now })?.id, 'g');
+  // Samsung saves the file at hang-up (MediaStore modified time), so a voice
+  // note that arrives mid-call can sit closer to "Start call" than the recording.
+  const voiceNote = rec('h', 'PTT-20260923-WA0003.opus', 20, null);
+  const savedContact = rec('i', 'Call recording Amr Aly_260923_143000.m4a', 95, null);
+  eq('a call recording beats other audio from the same minutes', pickRecording([voiceNote, savedContact], { phone: '+201127064476', startedAt: start, now })?.id, 'i');
+  eq('Arabic recorder names count as call recordings', pickRecording([voiceNote, rec('j', 'تسجيل مكالمة 2026-09-23.m4a', 95)], { phone: '', startedAt: start, now })?.id, 'j');
+  eq('any audio still beats nothing', pickRecording([voiceNote], { phone: '+201127064476', startedAt: start, now })?.id, 'h');
 
   eq('m4a → audio/mp4', audioMimeType('call.m4a'), 'audio/mp4');
   eq('mp3 → audio/mpeg', audioMimeType('call.MP3'), 'audio/mpeg');

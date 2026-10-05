@@ -33,8 +33,30 @@ embeds secrets).
   the number wins); in Expo Go on Android media-library audio access isn't
   grantable and iOS has none, so fall back to `expo-document-picker`
   (`audio/*`). On iPhone, recordings live in Notes → share to Files first.
+- **expo-media-library's `Query` can't find audio by `CREATION_TIME`.** It
+  maps that field to MediaStore's `DATE_TAKEN`, which Android fills only for
+  photos and videos, so `.gte(AssetField.CREATION_TIME, …)` returns no audio
+  at all, and `getCreationTime()` is null. Filter and sort on
+  `AssetField.MODIFICATION_TIME` instead: it is `DATE_MODIFIED`, converted
+  ms ⇄ s by the module, and for a call recording it is the hang-up time.
+  `getDuration()` is video-only too. Expo Go never runs this path, so
+  nothing showed the bug until a real APK was planned. Read the native
+  module's column mapping before trusting a field on a media type it wasn't
+  written for.
+- **Samsung (One UI 7/8, e.g. Galaxy A17):**
+  - The Phone app records calls itself: ⋮ → Settings → Record calls → Auto
+    record calls. The option is missing where the regional firmware forbids
+    recording.
+  - Files are `Recordings/Call/Call recording <number|contact>_<yymmdd>_<hhmmss>.m4a`.
+    Match on the number's last 9 digits, then on a call-like name (so a
+    WhatsApp `PTT-….opus` voice note that arrived mid-call loses), then on
+    timing.
+  - Android 13+ needs `READ_MEDIA_AUDIO` (expo-media-library
+    `granularPermissions: ['audio']`). The file URI is `file://`, readable
+    for upload and base64.
 - **Transcription:** Gemini `generateContent` with inline base64 audio
-  (keep raw audio under ~14 MB; AMR/3GP unsupported), a `responseSchema` for
+  (keep raw audio under ~14 MB; AMR/3GP unsupported; `.m4a` sent as
+  `audio/mp4` verified accepted, though not on the documented list), a `responseSchema` for
   `{summary, transcript}`, and split speaker turns on labels because the
   model runs them together.
 - **Files on device:** expo-file-system's `File` class (`.base64()`,

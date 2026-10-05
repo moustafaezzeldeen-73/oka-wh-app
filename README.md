@@ -88,9 +88,11 @@ and save it as an audio file. The app builds on that:
 1. **Start call** opens the dialer; the phone's recorder captures the call.
 2. **End call**, then pick the outcome (answered / no answer / wrong number /
    refused).
-3. The app finds the phone's recording of that call — the newest audio file
-   created since the call started, preferring one whose filename contains the
-   number — and shows it for confirmation. In a real Android build this is
+3. The app finds the phone's recording of that call — audio saved since the
+   call started (MediaStore's modified time: audio files have no "date
+   taken"), preferring a filename with the number, then one named like a call
+   recording over other audio such as a WhatsApp voice note — and shows it for
+   confirmation. In a real Android build this is
    automatic (`READ_MEDIA_AUDIO`, audio only). In Expo Go and on iPhone,
    **Choose file** opens the system file picker instead, since Expo Go can't be
    granted media access on Android.
@@ -104,6 +106,19 @@ and save it as an audio file. The app builds on that:
    summary and a link to the recording. The full transcript is uploaded as a
    `.txt` next to the recording and linked, rather than stored in the log,
    because JSON metafields are capped at 128 KB from API 2026-04 on.
+
+**Samsung phones (e.g. Galaxy A17, One UI 7/8)** — install the app with
+`npm run build:apk`, then once on the phone:
+1. Phone app → ⋮ → **Settings** → **Record calls** → **Auto record calls**:
+   **All calls** (or *Numbers not saved in contacts*, since most customers
+   aren't saved). If **Record calls** isn't in the menu, that phone's region
+   firmware doesn't allow call recording; use **Choose file** or another phone.
+2. On the first call, allow OKA Warehouse **Music and audio** access.
+
+Samsung saves each call as `Recordings/Call/Call recording <number or
+contact>_<yymmdd>_<hhmmss>.m4a` at hang-up; the app picks it up within a few
+seconds of **End call**, uploads it and has Gemini transcribe it (`.m4a` goes
+as `audio/mp4`, verified accepted).
 
 Nothing blocks the call from being logged: a failed upload, a missing Gemini
 key, a format Gemini can't read (AMR, 3GP) or a recording over ~14 MB each

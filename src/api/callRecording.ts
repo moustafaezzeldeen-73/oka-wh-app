@@ -14,7 +14,11 @@
 export type RecordingCandidate = {
   id: string;
   filename: string;
-  /** Unix ms. */
+  /**
+   * Unix ms when the file appeared. On Android this is MediaStore's modified
+   * time — when the phone's recorder finished writing it, just after hang-up —
+   * because audio files carry no "date taken".
+   */
   creationTime: number | null;
   /** Seconds. */
   duration: number | null;
@@ -33,13 +37,20 @@ export function phoneKey(phone: string): string {
 const EARLY_MS = 2 * 60_000;
 
 /**
+ * A recorder's own file rather than other audio that lands during a call, such
+ * as a WhatsApp voice note ("PTT-20260923-WA0003.opus"). Samsung names them
+ * "Call recording <number or contact>_<yymmdd>_<hhmmss>.m4a".
+ */
+const CALL_FILE = /call|record|تسجيل|مكالم/i;
+
+/**
  * Choose the recording that belongs to this call.
  *
  * Candidates must have been created after the call started (with a little
  * slack) and not in the future. Among those, one whose filename carries the
- * number wins — recorders that name files after the contact still match on
- * timing alone. Ties go to the recording created closest to the tap on
- * "Start call".
+ * number wins, then one named like a call recording — recorders that name
+ * files after the contact still match on timing. Ties go to the recording
+ * created closest to the tap on "Start call".
  */
 export function pickRecording(
   candidates: RecordingCandidate[],
@@ -58,9 +69,13 @@ export function pickRecording(
     key !== '' && c.filename.replace(/\D/g, '').includes(key);
   const distance = (c: RecordingCandidate) => Math.abs((c.creationTime as number) - opts.startedAt);
 
+  const looksLikeCall = (c: RecordingCandidate) => CALL_FILE.test(c.filename);
+
   return eligible.slice().sort((a, b) => {
     const byNumber = Number(matchesNumber(b)) - Number(matchesNumber(a));
-    return byNumber !== 0 ? byNumber : distance(a) - distance(b);
+    if (byNumber !== 0) return byNumber;
+    const byName = Number(looksLikeCall(b)) - Number(looksLikeCall(a));
+    return byName !== 0 ? byName : distance(a) - distance(b);
   })[0];
 }
 

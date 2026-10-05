@@ -51,10 +51,14 @@ export async function findCallRecording(opts: {
 
   const attempts = opts.attempts ?? 4;
   for (let i = 0; i < attempts; i++) {
+    // Not CREATION_TIME: expo-media-library maps it to MediaStore's DATE_TAKEN,
+    // which Android only fills for photos and videos — on audio it is empty, so
+    // the query would never return a call recording. DATE_MODIFIED is set for
+    // every file: for a call recording, when the recorder finished writing it.
     const assets = await new Query()
       .eq(AssetField.MEDIA_TYPE, MediaType.AUDIO)
-      .gte(AssetField.CREATION_TIME, opts.startedAt - 2 * 60_000)
-      .orderBy({ key: AssetField.CREATION_TIME, ascending: false })
+      .gte(AssetField.MODIFICATION_TIME, opts.startedAt - 2 * 60_000)
+      .orderBy({ key: AssetField.MODIFICATION_TIME, ascending: false })
       .limit(15)
       .exe();
 
@@ -64,7 +68,8 @@ export async function findCallRecording(opts: {
           asset,
           id: asset.id,
           filename: await asset.getFilename(),
-          creationTime: await asset.getCreationTime(),
+          creationTime: (await asset.getCreationTime()) ?? (await asset.getModificationTime()),
+          // Only reported for video; the log falls back to the in-app call timer.
           duration: await asset.getDuration(),
         })),
       );
