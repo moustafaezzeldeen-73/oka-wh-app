@@ -106,9 +106,11 @@ export function audioMimeType(filename: string, reported?: string | null): strin
 }
 
 /**
- * Formats Gemini accepts as inline audio. AMR and 3GP — used by some older
- * Samsung and Xiaomi recorders — are not among them; those recordings are
- * still uploaded, just not transcribed.
+ * Formats Gemini accepts as inline audio. Google's list stops at WAV, MP3,
+ * AIFF, AAC, OGG and FLAC, but live requests (5 Oct 2026, gemini-2.5-flash)
+ * transcribed .m4a sent as audio/mp4, AMR narrow- and wide-band sent as
+ * audio/amr, and 3GP as audio/3gpp. AMR matters: older Huawei (EMUI ≤ 9),
+ * Samsung and Xiaomi recorders save calls in it.
  */
 const GEMINI_AUDIO = new Set([
   'audio/mp4',
@@ -117,6 +119,8 @@ const GEMINI_AUDIO = new Set([
   'audio/wav',
   'audio/ogg',
   'audio/flac',
+  'audio/amr',
+  'audio/3gpp',
 ]);
 
 export function geminiCanTranscribe(mimeType: string): boolean {

@@ -120,8 +120,18 @@ contact>_<yymmdd>_<hhmmss>.m4a` at hang-up; the app picks it up within a few
 seconds of **End call**, uploads it and has Gemini transcribe it (`.m4a` goes
 as `audio/mp4`, verified accepted).
 
+**Huawei on EMUI 5 (e.g. nova plus MLA-L11, Android 7.0)** — during a call
+the call screen shows **Record**; for every call: Phone → ⋮ → **Settings** →
+**Auto-record calls**. EMUI 5 saves `record/<contact>@<number>_<date>.amr`;
+the number in the name is what the app matches on. Allow **Storage** access on
+the first call. AMR isn't on Gemini's documented list but transcribes fine
+(verified live, as is 3GP), so these are transcribed too. If the call screen
+has no Record button, that firmware has no recorder; on Android 7 a recorder
+app from the Play Store works instead, and the app picks up its files the same
+way.
+
 Nothing blocks the call from being logged: a failed upload, a missing Gemini
-key, a format Gemini can't read (AMR, 3GP) or a recording over ~14 MB each
+key, an audio format outside the verified list or a recording over ~14 MB each
 become a visible line in the order log instead. The app itself no longer asks
 for microphone access.
 
@@ -181,6 +191,11 @@ When it finishes:
 
 Rebuild and reinstall over the old one after code changes. The keys are
 inside the APK, so only give it to OKA staff.
+
+Android 7.0 predates Let's Encrypt's root certificate (added in 7.1.1), so
+`plugins/with-android-trust-anchors.js` bundles ISRG Root X1/X2 into native
+builds and trusts them alongside the system store. Without it, any API host
+using a Let's Encrypt certificate would refuse to connect on that phone.
 
 `npm run verify -- --write` additionally writes one log entry to a real order so
 you can confirm the timeline entry appears in Shopify admin.

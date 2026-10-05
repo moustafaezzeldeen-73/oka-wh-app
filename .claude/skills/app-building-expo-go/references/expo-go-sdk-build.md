@@ -253,5 +253,21 @@ no Expo Go and no dev server.
   1. Download the APK from the Codespace.
   2. Phone → **Transfer files** (MTP); copy the APK into Download.
   3. Tap it in **Files**; allow **Unknown sources** when asked.
+- **Android 7.0 doesn't trust Let's Encrypt.** ISRG Root X1 arrived in
+  7.1.1, and since 2024 Let's Encrypt no longer serves the cross-signed chain
+  old phones relied on, so any API host on a Let's Encrypt certificate fails
+  the TLS handshake. A config plugin (`plugins/with-android-trust-anchors.js`
+  in the OKA repo):
+  - copies ISRG Root X1/X2 into `res/raw`, taking them from
+    `/etc/ssl/certs/ISRG_Root_X*.pem` and checking their SHA-256
+    fingerprints;
+  - writes `res/xml/network_security_config.xml` with trust anchors `system`
+    plus both roots;
+  - sets `android:networkSecurityConfig` on the application.
+
+  That XML replaces `usesCleartextTraffic`, so keep a cleartext
+  `domain-config` for localhost, 127.0.0.1 and 10.0.2.2 for debug Metro. You
+  can't see real server certificates from a TLS-re-terminating sandbox, so
+  don't try to work out which hosts need it; just ship the roots.
 - Git-ignore `/android`, `/ios` and `*.apk`. Generated native projects are
   rebuilt from `app.config.js`, and the APK contains the keys.

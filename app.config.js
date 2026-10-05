@@ -38,6 +38,8 @@ module.exports = ({ config }) => ({
     },
   },
   plugins: [
+    // Android 7.0 lacks Let's Encrypt's root; bundle it (native builds only).
+    './plugins/with-android-trust-anchors',
     [
       'expo-camera',
       {

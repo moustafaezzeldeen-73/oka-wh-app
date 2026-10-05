@@ -43,6 +43,16 @@ embeds secrets).
   nothing showed the bug until a real APK was planned. Read the native
   module's column mapping before trusting a field on a media type it wasn't
   written for.
+- **Huawei EMUI 5 (Android 7.0, e.g. nova plus MLA-L11):**
+  - Record from the call screen, or Phone → ⋮ → Settings → Auto-record
+    calls.
+  - Files are `record/<contact>@<number>_<yyyyMMddHHmmss>.amr`, so they
+    match on the number. EMUI 10+ moved to `Sounds/CallRecord/*.m4a`.
+  - On Android < 13, expo-media-library asks for `READ_EXTERNAL_STORAGE`,
+    and asks for `WRITE_EXTERNAL_STORAGE` only if the manifest still has
+    it, so blocking WRITE is safe.
+  - The `MODIFICATION_TIME` query works the same on the pre-Android-10 code
+    path.
 - **Samsung (One UI 7/8, e.g. Galaxy A17):**
   - The Phone app records calls itself: ⋮ → Settings → Record calls → Auto
     record calls. The option is missing where the regional firmware forbids
@@ -55,8 +65,13 @@ embeds secrets).
     `granularPermissions: ['audio']`). The file URI is `file://`, readable
     for upload and base64.
 - **Transcription:** Gemini `generateContent` with inline base64 audio
-  (keep raw audio under ~14 MB; AMR/3GP unsupported; `.m4a` sent as
-  `audio/mp4` verified accepted, though not on the documented list), a `responseSchema` for
+  (keep raw audio under ~14 MB). Live tests transcribed formats that aren't
+  on Google's documented list: `.m4a` as `audio/mp4`, **AMR** narrow- and
+  wide-band as `audio/amr`, and 3GP as `audio/3gpp`. I had excluded AMR from
+  the docs alone, which would have left every Huawei EMUI ≤ 9 recording
+  untranscribed. Test formats with a real request, e.g. ffmpeg from the
+  `imageio-ffmpeg` wheel plus speech from the `mespeak` npm package when no
+  sample can be downloaded. Use a `responseSchema` for
   `{summary, transcript}`, and split speaker turns on labels because the
   model runs them together.
 - **Files on device:** expo-file-system's `File` class (`.base64()`,

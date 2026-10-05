@@ -660,7 +660,10 @@ section('Call recording pickup');
   eq('amr → audio/amr', audioMimeType('call.amr'), 'audio/amr');
   eq('unknown extension falls back to reported type', audioMimeType('call.xyz', 'audio/x-foo'), 'audio/x-foo');
   check('Gemini reads m4a and mp3', geminiCanTranscribe('audio/mp4') && geminiCanTranscribe('audio/mpeg'));
-  check('Gemini skips AMR and 3GP', !geminiCanTranscribe('audio/amr') && !geminiCanTranscribe('audio/3gpp'));
+  // Verified live: Huawei EMUI 5 saves calls as .amr; Gemini transcribes it.
+  check('Gemini reads AMR and 3GP', geminiCanTranscribe('audio/amr') && geminiCanTranscribe('audio/3gpp'));
+  check('Gemini skips formats it was never shown to read', !geminiCanTranscribe('audio/x-ms-wma'));
+  eq('Huawei EMUI 5 recording matched by its number', pickRecording([rec('k', 'Ahmed@01127064476_20260923143112.amr', 70, null), voiceNote], { phone: '+201127064476', startedAt: start, now })?.id, 'k');
 
   eq('Cairo timestamp', cairoStamp(start), '20260923-1430');
   eq('Cairo midnight is 00, not 24', cairoStamp(Date.UTC(2026, 8, 22, 21, 5)), '20260923-0005');
