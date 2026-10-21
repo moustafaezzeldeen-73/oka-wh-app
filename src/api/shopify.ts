@@ -51,17 +51,25 @@ export async function shopifyGraphQL<T>(
       usingProxy ? 'proxy' : 'shopify',
     );
 
-  let res: GraphQLResponse<T>;
-  try {
-    res = await send();
-  } catch (err) {
-    // A rotated secret or a token Shopify retired early: mint a fresh one once.
-    if (tokens && err instanceof ApiError && err.status === 401) {
-      tokens.invalidate();
-      res = await send();
-    } else {
+  const sendAuthed = async (): Promise<GraphQLResponse<T>> => {
+    try {
+      return await send();
+    } catch (err) {
+      // A rotated secret or a token Shopify retired early: mint a fresh one once.
+      if (tokens && err instanceof ApiError && err.status === 401) {
+        tokens.invalidate();
+        return send();
+      }
       throw err;
     }
+  };
+
+  let res = await sendAuthed();
+  // Paging the order list can drain the rate-limit bucket: wait and retry
+  // instead of failing the whole load.
+  for (let attempt = 0; attempt < 3 && isThrottled(res); attempt++) {
+    await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+    res = await sendAuthed();
   }
 
   if (res.errors?.length) {
@@ -69,6 +77,12 @@ export async function shopifyGraphQL<T>(
   }
   if (!res.data) throw new ApiError('shopify', 200, 'Shopify returned no data');
   return res.data;
+}
+
+function isThrottled(res: GraphQLResponse<unknown>): boolean {
+  return (res.errors ?? []).some(
+    (e) => e.extensions?.code === 'THROTTLED' || /throttled/i.test(e.message ?? ''),
+  );
 }
 
 /** Surfaces `userErrors` from a mutation payload as a thrown ApiError. */
@@ -182,9 +196,45 @@ const ORDER_FIELDS = `
   deliveryCost: metafield(namespace: "oka", key: "delivery_cost") { value }
 `;
 
+/** How far back the order list reaches. Parcels still out after this are rare. */
+export const WORKING_SET_DAYS = 10;
+/** Safety cap on the list (≈40 orders a day). */
+export const WORKING_SET_MAX = 500;
+
 /**
- * Warehouse working set: open orders, newest first.
- * `extraQuery` narrows it further (used by search).
+ * Warehouse working set: every open order from the last `days`, newest
+ * first, paged. "Open" alone isn't a working set on this store: delivered
+ * orders stay open, so the newest 50 open orders were under 3 days and
+ * dropped everything still waiting, failed or in transit.
+ */
+export async function fetchWorkingSet(
+  opts: { days?: number; max?: number; now?: Date } = {},
+): Promise<ShopifyOrder[]> {
+  const since = new Date((opts.now ?? new Date()).getTime() - (opts.days ?? WORKING_SET_DAYS) * 86_400_000);
+  const max = opts.max ?? WORKING_SET_MAX;
+  const q = `status:open AND created_at:>='${since.toISOString()}'`;
+  const out: ShopifyOrder[] = [];
+  let after: string | null = null;
+  while (out.length < max) {
+    const data: { orders: { nodes: ShopifyOrder[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } =
+      await shopifyGraphQL(
+        `query WorkingSet($n: Int!, $q: String!, $after: String) {
+           orders(first: $n, query: $q, after: $after, sortKey: CREATED_AT, reverse: true) {
+             nodes { ${ORDER_FIELDS} }
+             pageInfo { hasNextPage endCursor }
+           }
+         }`,
+        { n: 50, q, after },
+      );
+    out.push(...data.orders.nodes);
+    if (!data.orders.pageInfo.hasNextPage || !data.orders.pageInfo.endCursor) break;
+    after = data.orders.pageInfo.endCursor;
+  }
+  return out.slice(0, max);
+}
+
+/**
+ * Open orders, newest first, one page. `extraQuery` narrows it further.
  */
 export async function fetchOrders(limit = 50, extraQuery = ''): Promise<ShopifyOrder[]> {
   const q = ['status:open', extraQuery].filter(Boolean).join(' AND ');

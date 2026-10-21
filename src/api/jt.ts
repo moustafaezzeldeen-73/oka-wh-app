@@ -5,7 +5,7 @@ import {
   isEmptyLookupError,
   signedRequest,
   sortScans,
-  txIdForOrder,
+  txIdsForOrder,
   updatePayload,
   type JtEnvelope,
   type JtOrder,
@@ -103,7 +103,7 @@ export const ordersByBillCodes = (codes: string[]) => ordersBy(2, codes);
 
 /** J&T parcels booked for these Shopify orders, keyed by the order name. */
 export async function ordersForShopifyNames(names: string[]): Promise<JtOrder[]> {
-  return ordersBy(1, names.map(txIdForOrder));
+  return ordersBy(1, names.flatMap(txIdsForOrder));
 }
 
 /**

@@ -3,12 +3,17 @@ import type { FilterKey, Strings } from '../i18n/strings';
 
 export type CallStatus = 'notcalled' | 'notanswered' | 'answered';
 
-/** Derived from the order's own activity log, so it survives app restarts. */
+/**
+ * Derived from the order's own activity log, so it survives app restarts.
+ * Customer calls only — a courier call says nothing about whether the
+ * customer was reached. A refusal is an answered call: the customer was
+ * reached, so they shouldn't land on the "call again" list.
+ */
 export function callStatus(order: Order): CallStatus {
-  const calls = order.activity.filter((e) => e.kind === 'call');
+  const calls = order.activity.filter((e) => e.kind === 'call' && e.meta?.target !== 'courier');
   if (calls.length === 0) return 'notcalled';
   const last = calls[calls.length - 1];
-  return last.outcome === 'answered' ? 'answered' : 'notanswered';
+  return last.outcome === 'answered' || last.outcome === 'refused' ? 'answered' : 'notanswered';
 }
 
 export function applyFilter(orders: Order[], key: FilterKey): Order[] {
@@ -22,7 +27,14 @@ export function applyFilter(orders: Order[], key: FilterKey): Order[] {
     case 'cancelled':
       return orders.filter((o) => o.status === 'cancelled');
     case 'readypickup':
-      return orders.filter((o) => o.tags.some((t) => t.toLowerCase() === 'oka-ready'));
+      // The tag stays on after pickup; only orders still on the floor count.
+      return orders.filter(
+        (o) =>
+          o.tags.some((t) => t.toLowerCase() === 'oka-ready') &&
+          o.status !== 'cancelled' &&
+          o.status !== 'delivered' &&
+          o.trackPhase === 0,
+      );
     case 'bosta':
     case 'jt':
     case 'inhouse':

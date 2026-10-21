@@ -443,7 +443,7 @@ export const FILTER_KEYS = [
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
 export const FILTER_LABELS: Record<Lang, string[]> = {
-  ar: ['الكل', 'جاهز', 'عنوان ناقص', 'ملغي', 'لسه متصل', 'مردش', 'رد', 'جاهز للاستلام', 'بوسطة', 'J&T', 'توصيل داخلي'],
+  ar: ['الكل', 'جاهز', 'عنوان ناقص', 'ملغي', 'لسه ما اتصلناش', 'مردش', 'رد', 'جاهز للاستلام', 'بوسطة', 'J&T', 'توصيل داخلي'],
   en: [
     'All',
     'Ready',

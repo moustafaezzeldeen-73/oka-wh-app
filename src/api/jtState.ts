@@ -284,14 +284,25 @@ export function jtIsTerminal(shipment: JtShipment): boolean {
  * after that the app locks the same fields rather than fail on save.
  */
 export function jtIsLocked(shipment: JtShipment): boolean {
-  if ((shipment.order?.orderStatus ?? 0) >= JT_ORDER_STATUS.pickedUp) return true;
+  // 104 (cancelled) is above 103 but means J&T never took the parcel.
+  if (shipment.order?.orderStatus === JT_ORDER_STATUS.pickedUp) return true;
   return shipment.scans.length > 0;
 }
 
-/** Delivery attempts: J&T's own count when present, else delivery scans. */
+/**
+ * Scans on the way out to the customer: everything before the first return
+ * scan. After it, "Delivery scan" (94) is the trip back to OKA.
+ */
+export function outboundScans(shipment: JtShipment): JtScan[] {
+  const oldestFirst = sortScans(shipment.scans).reverse();
+  const firstReturn = oldestFirst.findIndex(isReturnScan);
+  return firstReturn === -1 ? oldestFirst : oldestFirst.slice(0, firstReturn);
+}
+
+/** Delivery attempts: J&T's own count when present, else outbound delivery scans. */
 export function jtAttempts(shipment: JtShipment): number {
   if (typeof shipment.dispatches === 'number') return shipment.dispatches;
-  return shipment.scans.filter((s) => scanPhase(s) === 3).length;
+  return outboundScans(shipment).filter((s) => scanPhase(s) === 3).length;
 }
 
 const ORDER_STATUS_LABEL: Record<number, string> = {
@@ -323,9 +334,12 @@ export function courierFromScan(s: JtScan): { name: string; phone: string } | nu
   return m ? { name: collapse(m[1]), phone: m[2].replace(/[ -]/g, '') } : null;
 }
 
-/** The courier out on delivery — not the one who collected from the warehouse. */
+/**
+ * The courier out on delivery — not the one who collected from the warehouse,
+ * nor the one who brought a returned parcel back.
+ */
 export function jtCourier(shipment: JtShipment): { name: string; phone: string } | null {
-  for (const s of sortScans(shipment.scans)) {
+  for (const s of outboundScans(shipment).reverse()) {
     const p = scanPhase(s);
     if (p === 3 || p === 4) {
       const c = courierFromScan(s);
@@ -367,10 +381,20 @@ export function problemFromScan(s: JtScan): JtProblem {
   };
 }
 
-/** The current problem: a problem scan with nothing newer superseding it. */
+/**
+ * The current problem: the newest problem scan that no later delivery attempt
+ * (94), signature (100) or return supersedes. Handling scans don't: on live
+ * parcels a "Left Over Scan" (120, held at the branch) follows most failed
+ * attempts within hours, which used to hide the reason by next morning.
+ */
 export function jtOpenProblem(shipment: JtShipment): JtProblem | null {
-  const latest = sortScans(shipment.scans)[0];
-  return latest && isProblemScan(latest) ? problemFromScan(latest) : null;
+  for (const s of sortScans(shipment.scans)) {
+    if (isProblemScan(s)) return problemFromScan(s);
+    if (isReturnScan(s)) return null;
+    const p = scanPhase(s);
+    if (p === 3 || p === 4) return null;
+  }
+  return null;
 }
 
 function splitUrls(s: string | undefined): string[] {
@@ -448,9 +472,16 @@ export function txIdForOrder(orderName: string): string {
   return `SHOPIFY${orderName.replace(/^#/, '').trim()}`;
 }
 
+/** Accepts re-bookings too: J&T needs a new txlogisticId, so OKA appends V2, V3… ("SHOPIFY2745921V2"). */
 export function orderNameForTxId(txId: string | undefined): string | null {
-  const m = /^SHOPIFY(\d+)$/i.exec((txId ?? '').trim());
+  const m = /^SHOPIFY(\d+)(?:V\d+)?$/i.exec((txId ?? '').trim());
   return m ? `#${m[1]}` : null;
+}
+
+/** The references a Shopify order can be booked under: the first booking and re-bookings. */
+export function txIdsForOrder(orderName: string): string[] {
+  const base = txIdForOrder(orderName);
+  return [base, `${base}V2`, `${base}V3`];
 }
 
 /** J&T echoes numbers back as "+20-0102…"; resubmitting that prefix would double it. */

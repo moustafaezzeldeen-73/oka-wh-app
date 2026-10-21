@@ -21,7 +21,7 @@ import {
   type JtShipment,
 } from './jt';
 import { buildOrder, carrierOfTracking, parcelFromShopify, pickParcel, type Order } from './model';
-import { fetchCatalog, fetchOrderById, fetchOrderByName, fetchOrders, type CatalogProduct } from './shopify';
+import { fetchCatalog, fetchOrderById, fetchOrderByName, fetchWorkingSet, type CatalogProduct } from './shopify';
 import type { ShopifyOrder } from './shopify';
 
 /** Strip the leading "#" so every system's references compare equal. */
@@ -74,8 +74,13 @@ async function jtByNames(names: string[], warn: Warn = ignore): Promise<Map<stri
   if (!jtConfigured || names.length === 0) return out;
   try {
     const orders = await ordersForShopifyNames(names);
-    // Newest booking wins when an order was booked more than once.
-    orders.sort((a, b) => (b.createOrderTime ?? '').localeCompare(a.createOrderTime ?? ''));
+    // A live booking beats a cancelled one; then the newest wins (re-bookings
+    // are "SHOPIFY<n>V2"…).
+    orders.sort(
+      (a, b) =>
+        Number(a.orderStatus === 104) - Number(b.orderStatus === 104) ||
+        (b.createOrderTime ?? '').localeCompare(a.createOrderTime ?? ''),
+    );
     for (const o of orders) {
       const name = orderNameForTxId(o.txlogisticId);
       if (name && !out.has(refKey(name))) out.set(refKey(name), o.billCode);
@@ -118,7 +123,7 @@ export async function loadOrders(opts: {
     warnings.add(`${courier}: ${err instanceof Error ? err.message : String(err)}`);
 
   const [shopifyOrders, index] = await Promise.all([
-    fetchOrders(opts.limit ?? 50),
+    fetchWorkingSet(opts.limit ? { max: opts.limit } : {}),
     bostaIndex(opts.bostaPages ?? 3).catch((err) => {
       warn('Bosta', err);
       return new Map<string, BostaDelivery>();
@@ -127,8 +132,10 @@ export async function loadOrders(opts: {
 
   const hints = new Map(shopifyOrders.map((o) => [o.id, parcelFromShopify(o)]));
 
-  // Orders Shopify doesn't yet show as shipped may still be booked with J&T.
-  const unhinted = shopifyOrders.filter((o) => !hints.get(o.id) && !index.has(refKey(o.name)));
+  // Orders Shopify doesn't yet show as shipped may still be booked with J&T —
+  // also when Bosta holds an older (often terminated) booking for the same
+  // order; pickParcel then prefers the live one.
+  const unhinted = shopifyOrders.filter((o) => !hints.get(o.id));
   const jtBooked = await jtByNames(unhinted.map((o) => o.name), warn);
 
   const jtCodes = [
@@ -137,17 +144,19 @@ export async function loadOrders(opts: {
   ];
   const [jtByCode] = await Promise.all([
     jtShipments(jtCodes, warn),
-    backfillBosta(shopifyOrders, hints, index, jtBooked),
+    backfillBosta(shopifyOrders, hints, index, jtBooked, warn),
   ]);
 
   const orders = shopifyOrders.map((o) => {
     const hint = hints.get(o.id) ?? null;
     const jtCode = hint?.carrier === 'jt' ? hint.awb : jtBooked.get(refKey(o.name));
-    const parcel = pickParcel({
-      hint,
-      bosta: bostaFor(o, hint, index),
-      jt: jtCode ? (jtByCode.get(jtCode) ?? null) : null,
-    });
+    const jtShipment = jtCode ? (jtByCode.get(jtCode) ?? null) : null;
+    const bosta = bostaFor(o, hint, index);
+    // Booked with J&T but its status couldn't be read: keep the AWB rather than
+    // show the order as unbooked (and invite a second booking).
+    const effectiveHint =
+      hint ?? (jtCode && !jtShipment && !bosta ? { carrier: 'jt' as const, awb: jtCode } : null);
+    const parcel = pickParcel({ hint: effectiveHint, bosta, jt: jtShipment });
     return buildOrder(o, parcel, parseActivity(o), opts.ar);
   });
 
@@ -170,32 +179,43 @@ function bostaFor(
 /**
  * Chase down Bosta shipments that fell outside the recent window: by AWB for
  * orders Shopify says went with Bosta, by name for orders on no courier yet.
+ * AWB lookups go first with their own allowance — they are certain matches,
+ * while name searches are speculative and every new order would queue one.
  */
 async function backfillBosta(
   orders: ShopifyOrder[],
   hints: Map<string, { carrier: string; awb: string } | null>,
   index: Map<string, BostaDelivery>,
   jtBooked: Map<string, string>,
-  cap = 12,
+  warn: Warn = ignore,
+  caps = { awb: 30, name: 10 },
 ): Promise<void> {
   if (!bostaConfigured) return;
-  const jobs: (() => Promise<void>)[] = [];
+  const byAwb: (() => Promise<void>)[] = [];
+  const byName: (() => Promise<void>)[] = [];
   for (const o of orders) {
     const hint = hints.get(o.id);
     const known = index.get(refKey(o.name));
     if (hint?.carrier === 'bosta' && known?.trackingNumber !== hint.awb) {
-      jobs.push(async () => {
+      byAwb.push(async () => {
         const d = await bostaByAwb(hint.awb);
         if (d) index.set(`awb:${hint.awb}`, d);
       });
     } else if (!hint && !known && !jtBooked.has(refKey(o.name))) {
-      jobs.push(async () => {
+      byName.push(async () => {
         const d = await bostaByName(o.name);
         if (d) index.set(refKey(o.name), d);
       });
     }
   }
-  await Promise.all(jobs.slice(0, cap).map((j) => j().catch(() => undefined)));
+  if (byAwb.length > caps.awb) {
+    warn('Bosta', new Error(`${byAwb.length - caps.awb} older parcels not refreshed this time — pull to refresh`));
+  }
+  const jobs = [...byAwb.slice(0, caps.awb), ...byName.slice(0, caps.name)];
+  // A few at a time: single-delivery responses are large.
+  for (let i = 0; i < jobs.length; i += 6) {
+    await Promise.all(jobs.slice(i, i + 6).map((j) => j().catch(() => undefined)));
+  }
 }
 
 /** Everything about one order's parcel, looked up from scratch. */
@@ -267,34 +287,7 @@ export async function resolveScan(code: string, orders: Order[], ar: boolean): P
   return null;
 }
 
-/** Phone search for the shipping-status screen — matches Shopify and both couriers. */
-export function searchByPhone(orders: Order[], query: string): Order[] {
-  const digits = query.replace(/\D/g, '');
-  if (!digits) return orders;
-  return orders.filter(
-    (o) =>
-      o.phone.replace(/\D/g, '').includes(digits) ||
-      (o.awb ?? '').includes(digits) ||
-      o.name.replace(/\D/g, '').includes(digits),
-  );
-}
-
-/** Free-text search for the order list. */
-export function searchOrders(orders: Order[], query: string): Order[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return orders;
-  const digits = q.replace(/\D/g, '');
-  return orders.filter(
-    (o) =>
-      o.name.toLowerCase().includes(q) ||
-      o.customerName.toLowerCase().includes(q) ||
-      o.city.toLowerCase().includes(q) ||
-      (o.awb ?? '').toLowerCase().includes(q) ||
-      o.carrierName.toLowerCase().includes(q) ||
-      (digits.length > 0 &&
-        ((o.awb ?? '').includes(digits) || o.phone.replace(/\D/g, '').includes(digits))),
-  );
-}
+export { searchByPhone, searchOrders } from './search';
 
 export type { CatalogProduct };
 export { fetchCatalog };

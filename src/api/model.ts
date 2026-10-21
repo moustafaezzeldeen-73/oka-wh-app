@@ -3,6 +3,7 @@ import { PHASES } from '../i18n/strings';
 import {
   courierOf,
   isLockedState,
+  isReturning,
   isTerminalState,
   phaseFromState,
   phaseFromTimeline,
@@ -358,7 +359,9 @@ function bostaTracking(d: BostaDelivery): Tracking {
   return {
     phase,
     times: timesFromTimeline(d.timeline),
-    terminal: isTerminalState(d.state?.code, d.state?.value),
+    // A Return-to-Origin parcel is on its way back to OKA even while its state
+    // still reads "Out for delivery" / "In transit".
+    terminal: isTerminalState(d.state?.code, d.state?.value) || isReturning(d),
     locked: isLockedState(d.state?.code),
     courier: courierOf(d),
     attempts: d.attemptsCount ?? d.numberOfAttempts ?? 0,
@@ -441,10 +444,14 @@ export function buildOrder(
 ): Order {
   const delivery = parcel?.carrier === 'bosta' ? parcel.delivery : null;
   const jt = parcel?.carrier === 'jt' ? (parcel.shipment?.order ?? null) : null;
-  // An outside courier's parcel wins; otherwise the in-house tag decides.
-  const inhouse = !parcel && hasTag(order, TAG_INHOUSE);
-  const t = inhouse ? inhouseTracking(order, activity) : trackingOf(parcel);
-  const carrier: CarrierKey | null = parcel?.carrier ?? (inhouse ? 'inhouse' : null);
+  // A courier that holds the parcel wins. Otherwise the in-house tag decides:
+  // a booking that was cancelled, or never collected and rerouted onto OKA's
+  // own truck under the same AWB, doesn't make the order the courier's.
+  const courierT = trackingOf(parcel);
+  const courierHolds = parcel !== null && !courierT.terminal && (courierT.phase >= 1 || courierT.locked);
+  const inhouse = hasTag(order, TAG_INHOUSE) && !courierHolds;
+  const t = inhouse ? inhouseTracking(order, activity) : courierT;
+  const carrier: CarrierKey | null = inhouse ? 'inhouse' : (parcel?.carrier ?? null);
 
   const items = itemsOf(order);
   const customerName =
@@ -535,9 +542,25 @@ export function buildOrder(
   };
 }
 
-/** Egyptian numbers to E.164, so Shopify, the couriers and WhatsApp all agree. */
+/** Arabic-Indic (٠-٩) and Persian (۰-۹) digits to ASCII — phones and search input arrive in both. */
+export function toLatinDigits(s: string | null | undefined): string {
+  return (s ?? '')
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x6f0));
+}
+
+/**
+ * Egyptian numbers to E.164, so Shopify, the couriers and WhatsApp all agree.
+ * A field holding two numbers ("0100 123 4567 / 01112345678") yields the first.
+ */
 export function normalizePhone(raw: string): string {
-  const digits = (raw ?? '').replace(/[^\d+]/g, '');
+  const text = toLatinDigits(raw);
+  const first =
+    text
+      .split(/[\/,;|،]|\s(?:or|او|أو)\s/i)
+      .map((p) => p.replace(/[^\d+]/g, ''))
+      .find((p) => p.replace(/\D/g, '').length >= 9) ?? text.replace(/[^\d+]/g, '');
+  const digits = first.replace(/(?!^)\+/g, '');
   if (!digits) return '';
   if (digits.startsWith('+')) return digits;
   if (digits.startsWith('00')) return `+${digits.slice(2)}`;

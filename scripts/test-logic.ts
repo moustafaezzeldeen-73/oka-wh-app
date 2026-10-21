@@ -19,6 +19,7 @@ import {
   money,
   normalizePhone,
   packageDescription,
+  toLatinDigits,
   parcelFromShopify,
   photoIdsOf,
   pickParcel,
@@ -52,6 +53,7 @@ import {
   signedRequest,
   stripJtPhonePrefix,
   txIdForOrder,
+  txIdsForOrder,
   updatePayload,
   type JtOrder,
   type JtParty,
@@ -62,6 +64,7 @@ import { md5, toBase64, toHex } from '../src/api/md5';
 import {
   courierOf,
   isLockedState,
+  isReturning,
   isTerminalState,
   phaseFromState,
   phaseFromTimeline,
@@ -76,6 +79,7 @@ import {
 } from '../src/api/activityLog';
 import { applyFilter, callStatus, contactHistory, isRerouted, orderPhotos, truckRefusal } from '../src/state/selectors';
 import { stringsFor } from '../src/i18n/strings';
+import { nationalPhone, searchByPhone, searchOrders } from '../src/api/search';
 import type { ShopifyOrder } from '../src/api/shopify';
 import { createTokenSource, ShopifyTokenError, type TokenFetcher } from '../src/api/shopifyToken';
 import {
@@ -231,6 +235,8 @@ const BOSTA_WITH_COURIER = {
   },
   sender: { _id: 'tYh88eMFmbshuRZCAZDj2', name: 'OKA', phone: '+201025843317', type: 'BUSINESS_ACCOUNT' },
   holder: { _id: 'OcWhw5AP4bJQ2DrAfL7ia', phone: '01210699218', name: 'Ahmed Mohamed Mansour' },
+  // Live: the assigned courier is `star`; a role-less holder is hub staff.
+  star: { _id: 'Gx53SdpVo6aiKvUPsx8gA', phone: '01210699218', name: 'NC-J-Ahmed Mohamed Mansour\t -E' },
   dropOffAddress: {
     city: { _id: 'Jrb6X6ucjiYgMP4T7', name: 'Alexandria', nameAr: 'الاسكندريه' },
     firstLine: 'الملاحه امام قسم ثالث المنتزه',
@@ -312,7 +318,9 @@ eq('Returned label is terminal', isTerminalState(30, 'Returned to business'), tr
 eq('Delivered (45) is NOT terminal', isTerminalState(45, 'Delivered'), false);
 
 section('Courier resolution (business account must not read as a courier)');
-eq('real holder → courier', courierOf(BOSTA_WITH_COURIER)?.name, 'Ahmed Mohamed Mansour');
+eq('star → courier, hub code prefix and suffix removed', courierOf(BOSTA_WITH_COURIER)?.name, 'Ahmed Mohamed Mansour');
+eq('role-less holder at a hub is not the courier', courierOf({ ...BOSTA_WITH_COURIER, star: undefined } as BostaDelivery), null);
+eq('holder with role STAR is the courier', courierOf({ ...BOSTA_WITH_COURIER, star: undefined, holder: { name: 'Ali', phone: '0100', role: 'STAR' } } as BostaDelivery)?.name, 'Ali');
 eq('courier phone carried', courierOf(BOSTA_WITH_COURIER)?.phone, '01210699218');
 eq('BUSINESS_ADMIN holder → no courier', courierOf(BOSTA_NO_COURIER), null);
 eq('null delivery → no courier', courierOf(null), null);
@@ -1244,7 +1252,16 @@ section('In-house delivery');
   eq('in-house filter', applyFilter([out, done, buildOrder(SHOPIFY_ORDER, null, [], false)], 'inhouse').length, 2);
 
   const booked = buildOrder({ ...SHOPIFY_ORDER, tags: [TAG_INHOUSE] } as ShopifyOrder, jtParcel(JT_BOOKED), [], false);
-  eq('a courier parcel wins over the in-house tag', booked.carrier, 'jt');
+  eq('J&T never collected it and the OKA truck took it → in-house (rerouted)', [booked.carrier, booked.awb], ['inhouse', JT_BOOKED.billCode]);
+  const collected = buildOrder({ ...SHOPIFY_ORDER, tags: [TAG_INHOUSE] } as ShopifyOrder, jtParcel({ ...JT_FAILED, order: JT_ORDER }), [], false);
+  eq('a courier that collected the parcel wins over the in-house tag', collected.carrier, 'jt');
+  const cancelledBooking = buildOrder(
+    { ...SHOPIFY_ORDER, tags: [TAG_INHOUSE] } as ShopifyOrder,
+    jtParcel({ ...JT_BOOKED, order: { ...JT_BOOKED.order!, orderStatus: 104 } }),
+    [],
+    false,
+  );
+  eq('a cancelled J&T booking doesn\'t override the in-house tag', [cancelledBooking.carrier, cancelledBooking.status], ['inhouse', 'transit']);
 }
 
 section('AWB contents after an edit');
@@ -1664,6 +1681,73 @@ async function analyticsLoaderTests() {
   const broken: AnalyticsSources = { ...sources, jt: { customerCode: 'J0', call: async () => { throw new Error('HTTP 0'); } }, bosta: null };
   const res2 = await loadAnalytics(broken, { from: new Date('2026-09-20T00:00:00Z'), to: new Date('2026-09-21T00:00:00Z'), wait: async () => undefined });
   eq('J&T down → parcels unknown and a warning, not a crash', [res2.facts.slice(0, 3).map((x) => x.outcome), res2.warnings.length > 0], [['unknown', 'unknown', 'unknown'], true]);
+}
+
+section('QA regressions — order list');
+{
+  // Live 6-entry timeline for a parcel coming back: return entries carry no slot.
+  const rto = [
+    { value: 'new', code: 10, done: true, date: '2026-09-01T08:00:00Z' },
+    { value: 'picked_up', code: 21, done: true, date: '2026-09-01T12:00:00Z' },
+    { value: 'in_transit', code: 30, done: true, date: '2026-09-02T08:00:00Z' },
+    { value: 'out_for_delivery', code: 41, done: true, date: '2026-09-03T08:00:00Z' },
+    { value: 'out_for_return', code: 47, done: true, date: '2026-09-05T08:00:00Z' },
+    { value: 'returned_to_origin', code: 46, done: false },
+  ];
+  eq('6-entry timeline: return entries don’t read as delivered', phaseFromTimeline(rto), 3);
+  eq('6-entry timeline: times by value', timesFromTimeline(rto)[3], '2026-09-03T08:00:00Z');
+  eq('47 (exception) is live, not final', isTerminalState(47, 'Exception'), false);
+  eq('100 (lost) is final', isTerminalState(100, 'Lost'), true);
+  eq('lost label is final', isTerminalState(999, 'Lost'), true);
+  const rtoDelivery = { ...BOSTA_WITH_COURIER, type: { code: 20, value: 'Return to Origin' } } as unknown as BostaDelivery;
+  eq('Return to Origin is returning', isReturning(rtoDelivery), true);
+  eq('a forward delivery is not returning', isReturning(BOSTA_WITH_COURIER), false);
+  eq('an RTO parcel reads as cancelled on the order', buildOrder(SHOPIFY_ORDER, bostaParcel(rtoDelivery), [], false).status, 'cancelled');
+
+  // J&T: re-bookings are SHOPIFY<n>V2.
+  eq('V2 txId maps back to the order', orderNameForTxId('SHOPIFY2779521V2'), '#2779521');
+  eq('txIds tried for an order', txIdsForOrder('#2779521'), ['SHOPIFY2779521', 'SHOPIFY2779521V2', 'SHOPIFY2779521V3']);
+
+  // A Left Over Scan (120) after a failed attempt keeps the reason open.
+  const leftOver: JtScan = { scanTime: '2026-09-23 18:02:00', scanType: 'Left Over Scan', scanTypeCode: 120, problemReason: '留仓' };
+  eq('problem stays open after a 120 scan', jtOpenProblem({ ...JT_FAILED, scans: [leftOver, ...JT_FAILED.scans] })?.code, '1004');
+
+  // Courier on the way back isn't the delivering courier.
+  const returnScan: JtScan = { scanTime: '2026-09-25 10:00:00', scanType: 'Return Sign', scanTypeCode: 111, problemReason: '退件签收' };
+  const backLeg: JtScan = {
+    ...JT_DELIVERING_QENA,
+    scanTime: '2026-09-25 12:00:00',
+    desc: '【الإسكندرية】J&T courier Return Driver(01000000077)is delivering the shipment.',
+  };
+  eq('return-leg courier ignored', jtCourier({ ...JT_FAILED, scans: [backLeg, returnScan, ...JT_FAILED.scans] })?.name, 'Omar Adel Fekry');
+  eq('cancelled (104) J&T booking is not locked', jtIsLocked({ ...JT_BOOKED, order: { ...JT_ORDER, orderStatus: 104 } }), false);
+
+  // Phones: Arabic-Indic digits and two numbers in one field.
+  eq('Arabic-Indic digits', toLatinDigits('٠١٠٢٣٤٥٦٧٨٩'), '01023456789');
+  eq('Persian digits', toLatinDigits('۰۱۲'), '012');
+  eq('two numbers → the first', normalizePhone('01012345678 / 01198765432'), '+201012345678');
+  eq('Arabic "or" separator', normalizePhone('٠١٠١٢٣٤٥٦٧٨ او 01198765432'), '+201012345678');
+  eq('0020 prefix → national', nationalPhone('0020 101 234 5678'), '01012345678');
+  eq('+20 prefix → national', nationalPhone('+201012345678'), '01012345678');
+
+  const a = buildOrder(SHOPIFY_ORDER, null, [], false);
+  const pa = { ...a, phone: '+201012345678', name: '#1001', awb: null };
+  const pb = { ...a, phone: '+201198765432', name: '#1002', awb: '6400000002' };
+  eq('phone search with Arabic digits', searchByPhone([pa, pb], '٠١٠١٢').map((o) => o.name), ['#1001']);
+  eq('phone search with 0020', searchByPhone([pa, pb], '00201198765432').map((o) => o.name), ['#1002']);
+  eq('phone search: letters only match nothing', searchByPhone([pa, pb], 'abc'), []);
+  eq('phone search: empty → all', searchByPhone([pa, pb], ' ').length, 2);
+  eq('order search by Arabic digits of the name', searchOrders([pa, pb], '١٠٠٢').map((o) => o.name), ['#1002']);
+
+  // Filters.
+  const readyTag = { ...a, tags: ['oka-ready'] };
+  eq('ready filter keeps a floor order', applyFilter([readyTag], 'readypickup').length, 1);
+  eq('ready filter drops a cancelled order', applyFilter([{ ...readyTag, status: 'cancelled' as const }], 'readypickup').length, 0);
+  eq('ready filter drops a picked-up order', applyFilter([{ ...readyTag, trackPhase: 1 }], 'readypickup').length, 0);
+  const courierCall = makeEntry('call', 'Called courier', { outcome: 'noanswer', meta: { target: 'courier' } });
+  eq('courier calls don’t count as customer calls', callStatus({ ...a, activity: [courierCall] }), 'notcalled');
+  const refused = makeEntry('call', 'Customer refused', { outcome: 'refused' });
+  eq('a refusal counts as answered', callStatus({ ...a, activity: [refused] }), 'answered');
 }
 
 tokenTests()
