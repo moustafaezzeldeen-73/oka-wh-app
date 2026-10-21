@@ -21,10 +21,14 @@ const DEFAULT_TIMEOUT = 20_000;
 
 export async function fetchJson<T>(
   url: string,
-  init: RequestInit & { timeoutMs?: number },
+  init: RequestInit & { timeoutMs?: number; idempotent?: boolean },
   source: ApiError['source'],
 ): Promise<T> {
-  const { timeoutMs = DEFAULT_TIMEOUT, ...rest } = init;
+  // A write that isn't safe to replay (a Shopify mutation: an order edit, a
+  // fulfillment, mark-as-paid) is retried only on 429, which the server
+  // answers without doing anything. After a timeout or a 5xx it may already
+  // have gone through, so it fails and the caller reloads instead.
+  const { timeoutMs = DEFAULT_TIMEOUT, idempotent = true, ...rest } = init;
 
   let lastError: unknown;
   // Two attempts: warehouse Wi-Fi drops a request now and then, and a blind
@@ -39,7 +43,7 @@ export async function fetchJson<T>(
       const text = await res.text();
       if (!res.ok) {
         // 429/5xx are worth a second shot; 4xx are not.
-        if ((res.status === 429 || res.status >= 500) && attempt === 0) {
+        if ((res.status === 429 || (idempotent && res.status >= 500)) && attempt === 0) {
           await delay(600);
           continue;
         }
@@ -50,7 +54,7 @@ export async function fetchJson<T>(
       clearTimeout(timer);
       if (err instanceof ApiError) throw err;
       lastError = err;
-      if (attempt === 0) {
+      if (attempt === 0 && idempotent) {
         await delay(600);
         continue;
       }
@@ -58,7 +62,7 @@ export async function fetchJson<T>(
   }
 
   const msg = lastError instanceof Error ? lastError.message : 'network request failed';
-  throw new ApiError(source, 0, msg);
+  throw new ApiError(source, 0, idempotent ? msg : `${msg} — it may have gone through; reload before trying again`);
 }
 
 export const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

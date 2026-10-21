@@ -12,8 +12,9 @@ import { logActivity, makeEntry, appendActivity } from '../api/activity';
 import { processCall, type CallArgs } from '../api/callProcessing';
 import { cancelDelivery, getDeliveryByTracking, updateDelivery, updateDeliveryCod } from '../api/bosta';
 import { isConfigured, missingConfig, missingCouriers } from '../api/config';
-import { buildPickInfo, cancelJtOrder, updateJtOrder } from '../api/jt';
+import { buildPickInfo, cancelJtOrder, freshOrderForWrite, updateJtOrder } from '../api/jt';
 import { uploadFile } from '../api/media';
+import { planOrderEdit } from '../api/orderEdit';
 import {
   CARRIER_NAME,
   TAG_DELIVERED,
@@ -445,21 +446,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (changedQty.length > 0 || draft.additions.length > 0) {
           // A real Shopify order edit — Shopify records this on the timeline itself.
           const calc = await orderEditBegin(order.shopifyId);
+          const plan = planOrderEdit(calc.lineItems, order.items, draft.quantities, draft.additions);
 
-          for (const [lineItemId, qty] of changedQty) {
-            const item = order.items.find((i) => i.lineItemId === lineItemId);
-            // Calculated line items carry their own ids; match on title+qty.
-            const calcLine = calc.lineItems.nodes.find(
-              (n) => n.title === item?.title && n.quantity === item?.quantity,
-            );
-            if (!calcLine) continue;
-            await orderEditSetQuantity(calc.id, calcLine.id, qty);
-            summary.push(`${item?.title}: ${item?.quantity} → ${qty}`);
+          for (const step of plan.setQuantities) {
+            // Editable units first (fulfilled lines); if Shopify reads the
+            // number as the line's total instead, restage it as the total.
+            // Nothing is committed unless the staged total is the one asked for.
+            let staged: number | null;
+            try {
+              staged = await orderEditSetQuantity(calc.id, step.calcLineId, step.editable);
+            } catch (err) {
+              if (step.editable === step.to) throw err;
+              staged = -1;
+            }
+            if (staged !== null && staged !== step.to && step.editable !== step.to) {
+              staged = await orderEditSetQuantity(calc.id, step.calcLineId, step.to);
+            }
+            if (staged !== null && staged !== step.to) {
+              throw new Error(`${step.title}: Shopify staged ${staged} instead of ${step.to} — nothing was saved`);
+            }
+            summary.push(`${step.title}: ${step.from} → ${step.to}`);
           }
 
-          for (const add of draft.additions) {
-            await orderEditAddVariant(calc.id, add.variantId, 1);
-            summary.push(`+ ${add.title}`);
+          for (const add of plan.addVariants) {
+            await orderEditAddVariant(calc.id, add.variantId, add.quantity);
+            summary.push(add.quantity > 1 ? `+ ${add.title} x${add.quantity}` : `+ ${add.title}`);
           }
 
           await orderEditCommit(calc.id, `OKA Warehouse app: ${summary.join('; ')}`);
@@ -540,10 +551,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           // J&T takes the whole order again; the label's item list is rebuilt
           // so the courier's invoice matches what is in the box.
           try {
-            await updateJtOrder(order.jtOrder, order.name, {
+            const jtOrder = order.awb ? await freshOrderForWrite(order.awb) : order.jtOrder;
+            await updateJtOrder(jtOrder, order.name, {
               cod,
               street: addressChanged && draft.address ? draft.address : undefined,
               pickInfo: jtPickInfo(items, shipping, cod),
+              totalQuantity: itemsEdited ? items.reduce((n, i) => n + i.quantity, 0) : undefined,
             });
             if (codChanged) summary.push(`COD ${Math.round(order.cod)} → ${cod} EGP`);
             if (addressChanged && draft.address) summary.push(`Address → ${draft.address}`);
@@ -589,7 +602,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (order.bostaId) {
           await updateDeliveryCod(order.bostaId, cod);
         } else if (order.jtOrder) {
-          await updateJtOrder(order.jtOrder, order.name, {
+          const jtOrder = order.awb ? await freshOrderForWrite(order.awb) : order.jtOrder;
+          await updateJtOrder(jtOrder, order.name, {
             cod,
             pickInfo: jtPickInfo(order.items, order.shipping, cod),
           });

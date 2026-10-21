@@ -2,7 +2,10 @@ import { CONFIG, jtConfigured, usingProxy } from './config';
 import { ApiError, fetchJson } from './http';
 import {
   cancelPayload,
+  isAlreadyCancelledError,
   isEmptyLookupError,
+  jtIsLocked,
+  jtIsTerminal,
   signedRequest,
   sortScans,
   txIdsForOrder,
@@ -143,8 +146,31 @@ export async function shipmentFor(billCode: string): Promise<JtShipment | null> 
 // Writes — only accepted before J&T picks the parcel up
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * J&T's current copy of an order, for a write. An update resends the whole
+ * order, so a copy from when the list loaded could undo a change made since;
+ * and the parcel may have been picked up meanwhile. Both halves must answer —
+ * a missing scan history can't prove the parcel is still at OKA.
+ */
+export async function freshOrderForWrite(billCode: string): Promise<JtOrder> {
+  const [orders, traces] = await Promise.all([ordersByBillCodes([billCode]), traceMany([billCode])]);
+  const order = orders.find((o) => o.billCode === billCode);
+  if (!order) throw new ApiError('jt', 200, `J&T order ${billCode} could not be re-read`);
+  const trace = traces.get(billCode);
+  const shipment: JtShipment = { billCode, order, scans: sortScans(trace?.details), dispatches: null };
+  if (jtIsTerminal(shipment)) throw new ApiError('jt', 200, `J&T ${billCode} is cancelled or returning — not updated`);
+  if (jtIsLocked(shipment)) throw new ApiError('jt', 200, `J&T already picked up ${billCode} — COD and address are locked`);
+  return order;
+}
+
 export async function cancelJtOrder(order: JtOrder, reason: string): Promise<void> {
-  await call('/api/order/cancelOrder', cancelPayload(order, reason), true);
+  try {
+    await call('/api/order/cancelOrder', cancelPayload(order, reason), true);
+  } catch (err) {
+    // A second tap, or a cancel made on the J&T portal: the goal is met.
+    if (err instanceof ApiError && isAlreadyCancelledError(err.message)) return;
+    throw err;
+  }
 }
 
 /**
@@ -154,7 +180,7 @@ export async function cancelJtOrder(order: JtOrder, reason: string): Promise<voi
 export async function updateJtOrder(
   order: JtOrder,
   orderName: string,
-  change: { cod?: number; street?: string; pickInfo?: string },
+  change: { cod?: number; street?: string; pickInfo?: string; totalQuantity?: number },
 ): Promise<void> {
   await call('/api/order/addOrder', updatePayload(order, orderName, change), true);
 }

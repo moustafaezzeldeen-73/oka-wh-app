@@ -503,31 +503,55 @@ function partyForSubmit(p: JtParty | undefined): JtParty {
 /** The courier-facing handling notice OKA puts on every label. */
 export const NO_OPEN_NOTICE = 'ممنوع فتح الطرد - مستلزمات شخصية وصحية';
 
-/** Same layout the J&T connector uses: "Item x1 @189 EGP; …; COD: 249 EGP". */
+/** Cut to at most `max` UTF-16 units without splitting an emoji's surrogate pair. */
+export function clip(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const code = s.charCodeAt(max - 1);
+  return s.slice(0, code >= 0xd800 && code <= 0xdbff ? max - 1 : max);
+}
+
+/**
+ * Same layout the J&T connector uses: "Item x1 @189 EGP; …; COD: 249 EGP".
+ * J&T caps the field at 500; when a long order doesn't fit, item lines are
+ * dropped from the end ("+2 more") so the totals — what the courier collects —
+ * always survive.
+ */
 export function buildPickInfo(
   items: { name: string; qty: number; unitPrice: number }[],
   subtotal: number,
   shipping: number,
   cod: number,
 ): string {
+  const MAX = 500;
   const r = (n: number) => Math.round(n * 100) / 100;
   const lines = items
     .filter((it) => it.qty > 0)
     .map((it) => `${it.name} x${it.qty} @${r(it.unitPrice)} EGP`);
-  lines.push(`Subtotal: ${r(subtotal)} EGP`, `Shipping: ${r(shipping)} EGP`, `COD: ${r(cod)} EGP`);
-  const text = lines.join('; ');
-  const withNotice = `${text}; ${NO_OPEN_NOTICE}`;
-  return (withNotice.length <= 500 ? withNotice : text).slice(0, 500);
+  const totals = [`Subtotal: ${r(subtotal)} EGP`, `Shipping: ${r(shipping)} EGP`, `COD: ${r(cod)} EGP`];
+  const join = (ls: string[]) => [...ls, ...totals].join('; ');
+
+  const full = join(lines);
+  if (full.length + NO_OPEN_NOTICE.length + 2 <= MAX) return `${full}; ${NO_OPEN_NOTICE}`;
+  if (full.length <= MAX) return full;
+
+  for (let keep = lines.length - 1; keep >= 1; keep--) {
+    const kept = [...lines.slice(0, keep), `+${lines.length - keep} more`];
+    const text = join(kept);
+    if (text.length <= MAX) return text;
+  }
+  // One item name longer than the whole field: clip it, keep the totals.
+  const suffix = `${lines.length > 1 ? `; +${lines.length - 1} more` : ''}; ${totals.join('; ')}`;
+  return `${clip(lines[0] ?? '', MAX - suffix.length)}${suffix}`;
 }
 
 /** Keep the remark's other details (alt phones…) and only move the COD figure. */
 export function rewriteRemark(remark: string | undefined, orderName: string, cod: number): string {
   const amount = Math.round(cod * 100) / 100;
   if (remark && /COD\s*[\d.]+\s*EGP/i.test(remark)) {
-    return remark.replace(/COD\s*[\d.]+\s*EGP/i, `COD ${amount} EGP`).slice(0, 200);
+    return clip(remark.replace(/COD\s*[\d.]+\s*EGP/i, `COD ${amount} EGP`), 200);
   }
   const base = remark?.trim() || `OKA order ${orderName}`;
-  return `${base}; COD ${amount} EGP`.slice(0, 200);
+  return clip(`${base}; COD ${amount} EGP`, 200);
 }
 
 /**
@@ -537,7 +561,7 @@ export function rewriteRemark(remark: string | undefined, orderName: string, cod
 export function updatePayload(
   order: JtOrder,
   orderName: string,
-  change: { cod?: number; street?: string; pickInfo?: string },
+  change: { cod?: number; street?: string; pickInfo?: string; totalQuantity?: number },
 ): Record<string, unknown> {
   const cod = change.cod ?? order.itemsValue ?? 0;
   const receiver = partyForSubmit(order.receiver);
@@ -546,11 +570,15 @@ export function updatePayload(
     txlogisticId: order.txlogisticId,
     operateType: 2,
     expressType: order.expressType || 'EZ',
+    // Resubmitted as booked: a missing orderType/serviceType falls back to
+    // J&T's defaults and can flip a pickup booking to drop-off.
+    orderType: order.orderType,
+    serviceType: order.serviceType,
     deliveryType: order.deliveryType || '04',
     payType: order.payType,
     goodsType: order.goodsType || 'ITN6',
     weight: order.weight,
-    totalQuantity: order.totalQuantity ?? 1,
+    totalQuantity: change.totalQuantity ?? order.totalQuantity ?? 1,
     itemsValue: cod,
     priceCurrency: order.priceCurrency || 'EGP',
     remark: rewriteRemark(order.remark, orderName, cod),
@@ -570,6 +598,11 @@ export function updatePayload(
 export function isEmptyLookupError(code: string | number | undefined, msg: string | undefined): boolean {
   // Success comes back as the string "1"; error codes can arrive as numbers.
   return String(code) === '999001030' && /waybillNos size/i.test(msg ?? '');
+}
+
+/** J&T's answer to cancelling an order that is already cancelled. */
+export function isAlreadyCancelledError(msg: string | undefined): boolean {
+  return /已取消|already\s+(been\s+)?cancel|has\s+been\s+cancel|status.*cancel/i.test(msg ?? '');
 }
 
 export function cancelPayload(order: JtOrder, reason: string): Record<string, unknown> {

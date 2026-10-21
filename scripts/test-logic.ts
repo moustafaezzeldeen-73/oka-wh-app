@@ -32,6 +32,8 @@ import {
   branchPhoneFromScan,
   buildPickInfo,
   cancelPayload,
+  clip,
+  isAlreadyCancelledError,
   courierFromScan,
   formEncode,
   isEmptyLookupError,
@@ -80,6 +82,7 @@ import {
 import { applyFilter, callStatus, contactHistory, isRerouted, orderPhotos, truckRefusal } from '../src/state/selectors';
 import { stringsFor } from '../src/i18n/strings';
 import { nationalPhone, searchByPhone, searchOrders } from '../src/api/search';
+import { EditRefused, planOrderEdit, type CalcLine } from '../src/api/orderEdit';
 import type { ShopifyOrder } from '../src/api/shopify';
 import { createTokenSource, ShopifyTokenError, type TokenFetcher } from '../src/api/shopifyToken';
 import {
@@ -1748,6 +1751,59 @@ section('QA regressions — order list');
   eq('courier calls don’t count as customer calls', callStatus({ ...a, activity: [courierCall] }), 'notcalled');
   const refused = makeEntry('call', 'Customer refused', { outcome: 'refused' });
   eq('a refusal counts as answered', callStatus({ ...a, activity: [refused] }), 'answered');
+}
+
+section('QA regressions — order edits on fulfilled lines');
+{
+  const items = [
+    { lineItemId: 'gid://shopify/LineItem/111', variantId: 'gid://shopify/ProductVariant/1', title: 'Pads', quantity: 1 },
+    { lineItemId: 'gid://shopify/LineItem/222', variantId: 'gid://shopify/ProductVariant/2', title: 'Cup', quantity: 2 },
+  ];
+  // OKA fulfils on booking: every unit is fulfilled, nothing editable.
+  const fulfilled: CalcLine[] = [
+    { id: 'gid://shopify/CalculatedLineItem/111', title: 'Pads', quantity: 1, editableQuantity: 0, variantId: 'gid://shopify/ProductVariant/1' },
+    { id: 'gid://shopify/CalculatedLineItem/222', title: 'Cup', quantity: 2, editableQuantity: 0, variantId: 'gid://shopify/ProductVariant/2' },
+  ];
+  const up = planOrderEdit(fulfilled, items, { 'gid://shopify/LineItem/111': 2 }, []);
+  eq('1 → 2 on a fulfilled line stages 1 editable unit (not 2, which made 3)', up.setQuantities[0], {
+    calcLineId: 'gid://shopify/CalculatedLineItem/111', title: 'Pads', from: 1, to: 2, editable: 1,
+  });
+  let refused = '';
+  try { planOrderEdit(fulfilled, items, { 'gid://shopify/LineItem/222': 1 }, []); } catch (e) { refused = e instanceof EditRefused ? e.message : 'wrong error'; }
+  check('decrease below fulfilled is refused before any call', /already fulfilled/.test(refused), refused);
+
+  const open: CalcLine[] = fulfilled.map((l) => ({ ...l, editableQuantity: l.quantity }));
+  eq('unfulfilled line: editable = total', planOrderEdit(open, items, { 'gid://shopify/LineItem/222': 1 }, []).setQuantities[0].editable, 1);
+  eq('unchanged quantity → no call', planOrderEdit(open, items, { 'gid://shopify/LineItem/222': 2 }, []).setQuantities, []);
+
+  const adds = planOrderEdit(open, items, {}, [
+    { variantId: 'gid://shopify/ProductVariant/9', title: 'Wipes' },
+    { variantId: 'gid://shopify/ProductVariant/9', title: 'Wipes' },
+    { variantId: 'gid://shopify/ProductVariant/2', title: 'Cup' },
+  ]);
+  eq('same variant added twice → one call x2', adds.addVariants, [{ variantId: 'gid://shopify/ProductVariant/9', title: 'Wipes', quantity: 2 }]);
+  eq('adding a variant already on the order grows that line', adds.setQuantities.map((q) => [q.title, q.to]), [['Cup', 3]]);
+
+  let missing = '';
+  try { planOrderEdit([], items, { 'gid://shopify/LineItem/111': 3 }, []); } catch (e) { missing = (e as Error).message; }
+  check('a line Shopify no longer has is an error, not a silent skip', /not found/.test(missing), missing);
+}
+
+section('QA regressions — J&T payloads');
+{
+  const many = Array.from({ length: 30 }, (_, i) => ({ name: `منتج طويل الاسم رقم ${i + 1}`, qty: 1, unitPrice: 100 }));
+  const info = buildPickInfo(many, 3000, 50, 3050);
+  check('long invoice fits 500', info.length <= 500, String(info.length));
+  check('long invoice keeps the COD', info.endsWith('COD: 3050 EGP'), info.slice(-40));
+  check('long invoice says what was dropped', /\+\d+ more/.test(info));
+  const huge = buildPickInfo([{ name: 'x'.repeat(900), qty: 1, unitPrice: 5 }], 5, 0, 5);
+  check('one huge name still keeps the COD', huge.length <= 500 && huge.endsWith('COD: 5 EGP'), String(huge.length));
+  eq('clip never splits an emoji', clip('ab🚚', 3), 'ab');
+  const p = updatePayload(JT_ORDER, '#2779521', { cod: 300, totalQuantity: 3 });
+  eq('update keeps orderType/serviceType', [p.orderType, p.serviceType], ['2', '01']);
+  eq('update carries the new quantity', p.totalQuantity, 3);
+  check('already-cancelled answer recognised', isAlreadyCancelledError('J&T 121003: 订单已取消') && isAlreadyCancelledError('Order has already been cancelled'));
+  check('other errors are not', !isAlreadyCancelledError('J&T 999: system busy'));
 }
 
 tokenTests()

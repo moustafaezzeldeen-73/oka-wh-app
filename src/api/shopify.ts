@@ -1,6 +1,7 @@
 import { CONFIG, usingClientCredentials, usingProxy } from './config';
 import { photoIdsOf } from './model';
 import { ApiError, fetchJson } from './http';
+import type { CalcLine } from './orderEdit';
 import { createTokenSource, ShopifyTokenError } from './shopifyToken';
 
 type GraphQLResponse<T> = {
@@ -44,10 +45,11 @@ export async function shopifyGraphQL<T>(
   query: string,
   variables: Record<string, unknown> = {},
 ): Promise<T> {
+  const idempotent = !/^\s*mutation\b/.test(query);
   const send = async () =>
     fetchJson<GraphQLResponse<T>>(
       endpoint(),
-      { method: 'POST', headers: await headers(), body: JSON.stringify({ query, variables }) },
+      { method: 'POST', headers: await headers(), body: JSON.stringify({ query, variables }), idempotent },
       usingProxy ? 'proxy' : 'shopify',
     );
 
@@ -380,17 +382,20 @@ export async function setOrderMetafield(
 
 // ── Order editing (real Shopify order edits — these appear on the timeline) ──
 
-export type CalculatedOrder = {
+export type CalculatedOrder = { id: string; lineItems: CalcLine[] };
+
+type RawCalcLine = {
   id: string;
-  lineItems: {
-    nodes: { id: string; quantity: number; title: string; hasStagedLineItemDiscount?: boolean }[];
-  };
+  title: string;
+  quantity: number;
+  editableQuantity: number;
+  variant: { id: string } | null;
 };
 
 export async function orderEditBegin(orderId: string): Promise<CalculatedOrder> {
   const data = await shopifyGraphQL<{
     orderEditBegin: {
-      calculatedOrder: CalculatedOrder | null;
+      calculatedOrder: { id: string; lineItems: { nodes: RawCalcLine[] } } | null;
       userErrors: { field?: string[] | null; message: string }[];
     };
   }>(
@@ -398,7 +403,7 @@ export async function orderEditBegin(orderId: string): Promise<CalculatedOrder> 
        orderEditBegin(id: $id) {
          calculatedOrder {
            id
-           lineItems(first: 100) { nodes { id quantity title } }
+           lineItems(first: 100) { nodes { id title quantity editableQuantity variant { id } } }
          }
          userErrors { field message }
        }
@@ -408,26 +413,40 @@ export async function orderEditBegin(orderId: string): Promise<CalculatedOrder> 
   assertNoUserErrors(data.orderEditBegin, 'orderEditBegin');
   const co = data.orderEditBegin.calculatedOrder;
   if (!co) throw new ApiError('shopify', 200, 'orderEditBegin returned no calculated order');
-  return co;
+  return {
+    id: co.id,
+    lineItems: co.lineItems.nodes.map((n) => ({
+      id: n.id,
+      title: n.title,
+      quantity: n.quantity,
+      editableQuantity: n.editableQuantity,
+      variantId: n.variant?.id ?? null,
+    })),
+  };
 }
 
+/** Stages a quantity; resolves to the line's staged total so the caller can check it. */
 export async function orderEditSetQuantity(
   calculatedOrderId: string,
   calculatedLineItemId: string,
   quantity: number,
-): Promise<void> {
+): Promise<number | null> {
   const data = await shopifyGraphQL<{
-    orderEditSetQuantity: { userErrors: { field?: string[] | null; message: string }[] };
+    orderEditSetQuantity: {
+      calculatedLineItem: { quantity: number } | null;
+      userErrors: { field?: string[] | null; message: string }[];
+    };
   }>(
     `mutation SetQty($id: ID!, $lineItemId: ID!, $quantity: Int!) {
        orderEditSetQuantity(id: $id, lineItemId: $lineItemId, quantity: $quantity, restock: true) {
-         calculatedOrder { id }
+         calculatedLineItem { quantity }
          userErrors { field message }
        }
      }`,
     { id: calculatedOrderId, lineItemId: calculatedLineItemId, quantity },
   );
   assertNoUserErrors(data.orderEditSetQuantity, 'orderEditSetQuantity');
+  return data.orderEditSetQuantity.calculatedLineItem?.quantity ?? null;
 }
 
 export async function orderEditAddVariant(
