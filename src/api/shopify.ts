@@ -156,7 +156,7 @@ export type ShopifyOrder = {
     country: string | null;
   } | null;
   lineItems: { nodes: ShopifyLineItem[] };
-  metafield: { id: string; value: string } | null;
+  metafield: { id: string; value: string; compareDigest?: string | null } | null;
   /** `oka.photos`: JSON list of Shopify File ids (list.file_reference). */
   photos?: { value: string } | null;
   /** `oka.delivery_cost`: what an in-house delivery cost, EGP. */
@@ -193,7 +193,7 @@ const ORDER_FIELDS = `
       discountedUnitPriceAfterAllDiscountsSet { shopMoney { amount } }
     }
   }
-  metafield(namespace: "oka", key: "activity_log") { id value }
+  metafield(namespace: "oka", key: "activity_log") { id value compareDigest }
   photos: metafield(namespace: "oka", key: "photos") { value }
   deliveryCost: metafield(namespace: "oka", key: "delivery_cost") { value }
 `;
@@ -360,24 +360,68 @@ export async function updateOrderNoteAndTags(
   assertNoUserErrors(data.orderUpdate, 'orderUpdate');
 }
 
+/** Another handset wrote the metafield between our read and our write. */
+export class StaleWriteError extends ApiError {
+  constructor(what: string) {
+    super('shopify', 200, `${what} changed while saving`);
+    this.name = 'StaleWriteError';
+  }
+}
+
+/**
+ * Set one `oka.*` metafield. With `compareDigest` (from the value just read),
+ * Shopify refuses the write if the value changed since — see StaleWriteError.
+ */
 export async function setOrderMetafield(
   orderId: string,
   key: string,
   value: string,
   type = 'json',
+  compareDigest?: string | null,
 ): Promise<void> {
   const data = await shopifyGraphQL<{
-    metafieldsSet: { userErrors: { field?: string[] | null; message: string }[] };
+    metafieldsSet: { userErrors: { field?: string[] | null; message: string; code?: string | null }[] };
   }>(
     `mutation SetMetafield($metafields: [MetafieldsSetInput!]!) {
        metafieldsSet(metafields: $metafields) {
          metafields { id }
-         userErrors { field message }
+         userErrors { field message code }
        }
      }`,
-    { metafields: [{ ownerId: orderId, namespace: 'oka', key, value, type }] },
+    {
+      metafields: [
+        { ownerId: orderId, namespace: 'oka', key, value, type, ...(compareDigest ? { compareDigest } : {}) },
+      ],
+    },
   );
+  const errs = data.metafieldsSet.userErrors ?? [];
+  if (errs.some((e) => e.code === 'STALE_OBJECT' || /stale|been (modified|updated)/i.test(e.message))) {
+    throw new StaleWriteError(`oka.${key}`);
+  }
   assertNoUserErrors(data.metafieldsSet, 'metafieldsSet');
+}
+
+/** Adds tags without touching the others (orderUpdate's `tags` replaces the whole list). */
+export async function addOrderTags(orderId: string, tags: string[]): Promise<void> {
+  if (tags.length === 0) return;
+  const data = await shopifyGraphQL<{ tagsAdd: { userErrors: { field?: string[] | null; message: string }[] } }>(
+    `mutation AddTags($id: ID!, $tags: [String!]!) {
+       tagsAdd(id: $id, tags: $tags) { node { id } userErrors { field message } }
+     }`,
+    { id: orderId, tags },
+  );
+  assertNoUserErrors(data.tagsAdd, 'tagsAdd');
+}
+
+export async function removeOrderTags(orderId: string, tags: string[]): Promise<void> {
+  if (tags.length === 0) return;
+  const data = await shopifyGraphQL<{ tagsRemove: { userErrors: { field?: string[] | null; message: string }[] } }>(
+    `mutation RemoveTags($id: ID!, $tags: [String!]!) {
+       tagsRemove(id: $id, tags: $tags) { node { id } userErrors { field message } }
+     }`,
+    { id: orderId, tags },
+  );
+  assertNoUserErrors(data.tagsRemove, 'tagsRemove');
 }
 
 // ── Order editing (real Shopify order edits — these appear on the timeline) ──

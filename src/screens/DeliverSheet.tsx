@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Platform, Pressable, TextInput, View } from 'reac
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Mono, PrimaryButton, Txt } from '../components/primitives';
-import { money, type Order } from '../api/model';
+import { money, parseAmount, type Order } from '../api/model';
 import { useApp } from '../state/AppState';
 import { C, F, R } from '../theme/tokens';
 
@@ -18,12 +18,7 @@ export function DeliverSheet({ order }: { order: Order }) {
   const [costText, setCostText] = useState('');
   const [cash, setCash] = useState(false);
 
-  // Accept Arabic-Indic digits and a comma decimal, as typed on Arabic keyboards.
-  const normalised = costText
-    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
-    .replace(/[٫,]/g, '.')
-    .trim();
-  const cost = normalised === '' ? NaN : Number(normalised);
+  const cost = parseAmount(costText);
   const valid = Number.isFinite(cost) && cost >= 0;
   const owed = order.cod > 0;
 

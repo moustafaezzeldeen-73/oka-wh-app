@@ -144,7 +144,8 @@ async function waitForUrl(fileId: string, attempts = 12): Promise<string | null>
     const node = data.node;
     const url = node?.image?.url ?? node?.url ?? null;
     if (url) return url;
-    if (node?.fileStatus === 'FAILED') return null;
+    // A rejected file never gets a URL: say so instead of logging a photo with no link.
+    if (node?.fileStatus === 'FAILED') throw new Error('Shopify could not process the file');
 
     await new Promise((r) => setTimeout(r, 800 + i * 300));
   }

@@ -42,6 +42,11 @@ export function PickupScreen() {
   const [refused, setRefused] = useState(false);
   const [manual, setManual] = useState('');
   const cooling = useRef(false);
+  // One scan at a time: a slow lookup must not let the same parcel load twice.
+  const inFlight = useRef(false);
+  const lastMiss = useRef<{ code: string; at: number } | null>(null);
+  const scannedRef = useRef(scanned);
+  scannedRef.current = scanned;
 
   const truckLabel = (c: CarrierKey) => (c === 'inhouse' ? L.inhouse : CARRIER_NAME[c]);
   // Blue for OKA's own delivery run, green for courier pickups.
@@ -71,45 +76,58 @@ export function PickupScreen() {
 
   const onCode = useCallback(
     async (code: string) => {
-      if (cooling.current) return;
+      if (cooling.current || inFlight.current) return;
+      // The camera keeps seeing a label it can't match: stay quiet for a while
+      // instead of buzzing "not found" every 1.2 s.
+      const miss = lastMiss.current;
+      if (miss && miss.code === code && Date.now() - miss.at < 5000) return;
       cooling.current = true;
+      inFlight.current = true;
       setTimeout(() => {
         cooling.current = false;
       }, 1200);
 
-      const order = await handleScan(code);
-      if (!order) return;
-
-      if (scanned.includes(order.shopifyId)) {
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        showToast(L.scannedAlready);
-        return;
-      }
-
-      const loaded = await loadOnTruck(order);
-      if (!loaded.ok) {
-        setRefused(true);
-        setTimeout(() => setRefused(false), 600);
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        showToast(loaded.reason);
-        return;
-      }
-
-      setFlash(true);
-      setTimeout(() => setFlash(false), 200);
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      if (beep) {
-        try {
-          player.seekTo(0);
-          player.play();
-        } catch {
-          // A silent beep is not worth interrupting the scan run.
+      try {
+        const order = await handleScan(code);
+        if (!order) {
+          lastMiss.current = { code, at: Date.now() };
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          return;
         }
-      }
 
-      pushScanned(order.shopifyId);
+        if (scannedRef.current.includes(order.shopifyId)) {
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          showToast(L.scannedAlready);
+          return;
+        }
+
+        const loaded = await loadOnTruck(order);
+        if (!loaded.ok) {
+          setRefused(true);
+          setTimeout(() => setRefused(false), 600);
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          showToast(loaded.reason);
+          return;
+        }
+
+        setFlash(true);
+        setTimeout(() => setFlash(false), 200);
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        if (beep) {
+          try {
+            player.seekTo(0);
+            player.play();
+          } catch {
+            // A silent beep is not worth interrupting the scan run.
+          }
+        }
+
+        pushScanned(order.shopifyId);
+      } finally {
+        inFlight.current = false;
+      }
     },
-    [L, beep, handleScan, loadOnTruck, player, pushScanned, scanned, showToast],
+    [L, beep, handleScan, loadOnTruck, player, pushScanned, showToast],
   );
 
   const addManual = () => {
@@ -117,6 +135,7 @@ export function PickupScreen() {
     if (!digits) return;
     setManual('');
     cooling.current = false;
+    lastMiss.current = null;
     void onCode(`#${digits}`);
   };
 
@@ -361,7 +380,11 @@ export function PickupScreen() {
           </Txt>
         </Pressable>
         <Pressable
-          onPress={() => go('modes')}
+          onPress={() => {
+            // The truck has left: the next run starts from zero.
+            resetScans();
+            go('modes');
+          }}
           style={{
             flex: 1,
             height: 58,

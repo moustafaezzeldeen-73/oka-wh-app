@@ -44,7 +44,8 @@ import {
   orderEditBegin,
   orderEditCommit,
   orderEditSetQuantity,
-  updateOrderNoteAndTags,
+  addOrderTags,
+  removeOrderTags,
 } from '../api/shopify';
 import { stringsFor, type Lang, type Strings } from '../i18n/strings';
 import { isRerouted, truckRefusal } from './selectors';
@@ -306,8 +307,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const pushScanned = useCallback((shopifyId: string) => {
     setScanned((prev) => (prev.includes(shopifyId) ? prev : [...prev, shopifyId]));
   }, []);
-  const undoScan = useCallback(() => setScanned((prev) => prev.slice(0, -1)), []);
-  const resetScans = useCallback(() => setScanned([]), []);
+  // What each scan in this run did to its order, so Undo can take it back.
+  const loads = useRef(new Map<string, { truck: CarrierKey; tagged: boolean }>());
+  const uploadedPhotos = useRef(new Map<string, { fileId: string; url: string | null }>());
+  const undoScan = useCallback(() => {
+    const last = scanned[scanned.length - 1];
+    if (!last) return;
+    setScanned((prev) => prev.filter((id) => id !== last));
+    const load = loads.current.get(last);
+    loads.current.delete(last);
+    if (!load) return;
+    // The load was written to the order; the undo is too.
+    void (async () => {
+      try {
+        if (load.tagged) await removeOrderTags(last, [TAG_INHOUSE]);
+        await logActivity(
+          last,
+          'scan',
+          `Unloaded from the ${load.truck === 'inhouse' ? 'in-house delivery' : CARRIER_NAME[load.truck]} truck (undo)`,
+          { meta: { carrier: load.truck, undo: true } },
+        );
+        if (load.tagged) await refreshOne(last);
+      } catch (err) {
+        showToast(`${L.saveFailed}: ${err instanceof Error ? err.message : ''}`.trim());
+      }
+    })();
+  }, [L, refreshOne, scanned, showToast]);
+  const resetScans = useCallback(() => {
+    loads.current.clear();
+    setScanned([]);
+  }, []);
   const toggleBeep = useCallback(() => setBeep((b) => !b), []);
 
   // ── edit draft ─────────────────────────────────────────────────────────────
@@ -358,8 +387,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (order: Order) => {
       setBusy(L.syncing);
       try {
-        const tags = Array.from(new Set([...order.tags, 'oka-ready']));
-        await updateOrderNoteAndTags(order.shopifyId, null, tags);
+        await addOrderTags(order.shopifyId, ['oka-ready']);
         await logActivity(order.shopifyId, 'status', 'Marked ready to load (warehouse app)', {
           meta: { awb: order.awb, phase: order.trackPhaseLabel.en },
         });
@@ -664,10 +692,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (order, uri) => {
       setBusy(L.photoUploading);
       try {
-        const { fileId, url } = await uploadFile(uri, 'image', {
-          orderName: order.name,
-          label: 'contents',
-        });
+        // A retry after a failed save reuses the file already on Shopify
+        // instead of uploading (and leaving behind) a second copy.
+        const done = uploadedPhotos.current.get(uri);
+        const { fileId, url } =
+          done ??
+          (await uploadFile(uri, 'image', {
+            orderName: order.name,
+            label: 'contents',
+          }));
+        uploadedPhotos.current.set(uri, { fileId, url });
         // The Warehouse photos field is what shows the image on the order page.
         let fieldNote = '';
         try {
@@ -682,6 +716,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             fieldNote,
           { mediaUrl: url ?? undefined, meta: { awb: order.awb, fileId } },
         );
+        uploadedPhotos.current.delete(uri);
         showToast(L.photoSaved);
         await refreshOne(order.shopifyId);
         return { ok: true as const };
@@ -702,14 +737,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       try {
         const notes: string[] = [];
         await setOrderMetafield(order.shopifyId, 'delivery_cost', String(cost), 'number_decimal');
-        const tags = Array.from(new Set([...order.tags, TAG_INHOUSE, TAG_DELIVERED]));
-        await updateOrderNoteAndTags(order.shopifyId, null, tags);
+        await addOrderTags(order.shopifyId, [TAG_INHOUSE, TAG_DELIVERED]);
         if (cashCollected) {
-          try {
-            await markOrderPaid(order.shopifyId);
-            notes.push(`cash ${Math.round(order.cod)} EGP collected, marked paid`);
-          } catch (err) {
-            notes.push(`could not mark paid: ${err instanceof Error ? err.message : 'unknown'}`);
+          // A second tap (or a retry after a dropped connection) must not
+          // fail on, or double up, a payment Shopify already has.
+          const fresh = await fetchOrderById(order.shopifyId).catch(() => null);
+          if (fresh?.displayFinancialStatus === 'PAID') {
+            notes.push(`cash ${Math.round(order.cod)} EGP collected, already marked paid`);
+          } else {
+            try {
+              await markOrderPaid(order.shopifyId);
+              notes.push(`cash ${Math.round(order.cod)} EGP collected, marked paid`);
+            } catch (err) {
+              notes.push(`could not mark paid: ${err instanceof Error ? err.message : 'unknown'}`);
+            }
           }
         }
         // Fulfilling needs fulfillment-order permissions the app may not have;
@@ -720,13 +761,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } catch (err) {
           notes.push(`not marked fulfilled in Shopify: ${err instanceof Error ? err.message : 'unknown'}`);
         }
-        await logActivity(
-          order.shopifyId,
-          'status',
-          `Delivered by in-house courier — delivery cost ${cost} EGP${notes.length ? ` (${notes.join('; ')})` : ''}`,
-          { meta: { carrier: 'inhouse', delivered: true, deliveryCost: cost, cashCollected } },
-        );
-        showToast(L.markedDelivered);
+        // The delivery is saved (tags, cost, payment); a failed log line is a
+        // warning, not a reason to make the courier enter it again.
+        let logFailed = '';
+        try {
+          await logActivity(
+            order.shopifyId,
+            'status',
+            `Delivered by in-house courier — delivery cost ${cost} EGP${notes.length ? ` (${notes.join('; ')})` : ''}`,
+            { meta: { carrier: 'inhouse', delivered: true, deliveryCost: cost, cashCollected } },
+          );
+        } catch (err) {
+          logFailed = err instanceof Error ? err.message : 'unknown';
+        }
+        showToast(logFailed ? `${L.markedDelivered} — ${L.logFailed}: ${logFailed}` : L.markedDelivered);
         await refreshOne(order.shopifyId);
         return true;
       } catch (err) {
@@ -740,20 +788,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loadOnTruck = useCallback<Ctx['loadOnTruck']>(
-    async (order) => {
+    async (scannedOrder) => {
       const truck = truckCarrier;
+      let order = scannedOrder;
+      if (truck === 'inhouse' && (order.carrier === 'jt' || order.carrier === 'bosta')) {
+        // The list can be hours old: ask the courier now whether it already
+        // took the parcel, before it goes on OKA's own truck.
+        const fresh = await reloadOrder(order.shopifyId, ar).catch(() => null);
+        if (!fresh) {
+          return {
+            ok: false,
+            reason: L.courierUnknown.replace('{order}', order.name).replace('{carrier}', order.carrierName),
+          };
+        }
+        order = fresh;
+        setOrders((prev) => prev.map((o) => (o.shopifyId === fresh.shopifyId ? fresh : o)));
+      }
       const reason = truckRefusal(order, truck, L);
       if (reason) return { ok: false, reason };
       const rerouted = isRerouted(order, truck);
+      const tagged = truck === 'inhouse' && !rerouted && !order.tags.some((t) => t.toLowerCase() === TAG_INHOUSE);
+      loads.current.set(order.shopifyId, { truck, tagged });
 
       // Logged without blocking the next scan. In-house also tags the order so
       // it shows as out for delivery — except a rerouted courier parcel, which
       // only gets the note: its courier and AWB stay as they are.
       void (async () => {
         try {
-          if (truck === 'inhouse' && !rerouted && !order.tags.some((t) => t.toLowerCase() === TAG_INHOUSE)) {
-            await updateOrderNoteAndTags(order.shopifyId, null, [...order.tags, TAG_INHOUSE]);
-          }
+          if (tagged) await addOrderTags(order.shopifyId, [TAG_INHOUSE]);
           await logActivity(
             order.shopifyId,
             'scan',
@@ -776,7 +838,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (rerouted) showToast(L.reroutedNote.replace('{order}', order.name));
       return { ok: true };
     },
-    [L, refreshOne, showToast, truckCarrier],
+    [L, ar, refreshOne, showToast, truckCarrier],
   );
 
   const handleScan = useCallback<Ctx['handleScan']>(

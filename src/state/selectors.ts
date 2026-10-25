@@ -1,4 +1,4 @@
-import { CARRIER_NAME, type CarrierKey, type Order } from '../api/model';
+import { CARRIER_NAME, TAG_DELIVERED, type CarrierKey, type Order } from '../api/model';
 import type { FilterKey, Strings } from '../i18n/strings';
 
 export type CallStatus = 'notcalled' | 'notanswered' | 'answered';
@@ -91,17 +91,25 @@ export function contactHistory(order: Order) {
  * trucks take only their own AWBs. The in-house truck takes orders without a
  * courier, and J&T or Bosta parcels rerouted to OKA's own delivery under the
  * same AWB (see `isRerouted`) — but only while that courier hasn't picked the
- * parcel up. When the courier's status couldn't be read, it refuses rather
+ * parcel up. Cancelled, returning and delivered orders go on no truck. When the courier's status couldn't be read, it refuses rather
  * than guess.
  */
 export function truckRefusal(
   order: Order,
   truck: CarrierKey,
-  L: Pick<Strings, 'wrongTruck' | 'noAwbForTruck' | 'inhouse' | 'pickedUpByCourier' | 'courierUnknown'>,
+  L: Pick<
+    Strings,
+    'wrongTruck' | 'noAwbForTruck' | 'inhouse' | 'pickedUpByCourier' | 'courierUnknown' | 'truckCancelled' | 'truckDelivered'
+  >,
 ): string | null {
+  const fill = (t: string) => t.replace('{order}', order.name).replace('{carrier}', order.carrierName);
+  // No truck takes a cancelled order, a parcel on its way back, or one already delivered.
+  if (order.status === 'cancelled') return fill(L.truckCancelled);
+  if (order.status === 'delivered' || order.tags.some((t) => t.toLowerCase() === TAG_DELIVERED)) {
+    return fill(L.truckDelivered);
+  }
   if (truck === 'inhouse') {
     if (order.carrier !== 'jt' && order.carrier !== 'bosta') return null;
-    const fill = (t: string) => t.replace('{order}', order.name).replace('{carrier}', order.carrierName);
     const known = order.carrier === 'jt' ? order.jtOrder !== null : order.bostaId !== null;
     if (!known) return fill(L.courierUnknown);
     if (order.locked || order.trackPhase >= 1) return fill(L.pickedUpByCourier);

@@ -550,6 +550,17 @@ export function toLatinDigits(s: string | null | undefined): string {
 }
 
 /**
+ * An amount as typed on the floor: Arabic-Indic or Persian digits, "1,250" or
+ * "1٬250" as thousands, "12,5" or "12٫5" as a decimal. NaN when it isn't one.
+ */
+export function parseAmount(text: string): number {
+  let t = toLatinDigits(text).replace(/\s|٬/g, '').replace(/٫/g, '.');
+  // A comma before exactly three digits groups thousands; any other is a decimal.
+  t = /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t) ? t.replace(/,/g, '') : t.replace(',', '.');
+  return /^\d+(\.\d+)?$/.test(t) ? Number(t) : NaN;
+}
+
+/**
  * Egyptian numbers to E.164, so Shopify, the couriers and WhatsApp all agree.
  * A field holding two numbers ("0100 123 4567 / 01112345678") yields the first.
  */
